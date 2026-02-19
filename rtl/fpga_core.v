@@ -234,6 +234,7 @@ wire         app1_rx_tlast;
 
 wire         app1_tx_hdr_valid;
 wire         app1_tx_hdr_ready;
+wire         echo_tx_hdr_ready;
 wire [31:0]  app1_tx_ip_dst;
 wire [31:0]  app1_tx_ip_src;
 wire [15:0]  app1_tx_udp_dst_port;
@@ -282,97 +283,108 @@ assign tx_ip_payload_axis_tuser   = 1'b0;
 
 // -----------------------------------------------------------------------------
 // UDP application routing
-//   - Echo on port 1234 (original behavior)
-//   - Register bridge on port 10000
+//   - Echo on port 1234 (stock behavior)
+//   - Register bridge on port 10000 (new)
 // -----------------------------------------------------------------------------
 wire match_echo   = (rx_udp_dest_port == 16'd1234);
 wire match_regapp = (rx_udp_dest_port == 16'd10000);
 
-// Latch selection for the duration of each RX payload frame
+// Category latch per payload frame (prevents mid-frame switching)
 reg cat_echo = 1'b0, cat_reg = 1'b0;
 always @(posedge clk) begin
     if (rst) begin
         cat_echo <= 1'b0;
         cat_reg  <= 1'b0;
     end else begin
-        if (rx_udp_payload_axis_tvalid) begin
-            if ((!cat_echo && !cat_reg) ||
-                (rx_udp_payload_axis_tvalid && rx_udp_payload_axis_tready && rx_udp_payload_axis_tlast)) begin
-                cat_echo <= match_echo;
-                cat_reg  <= match_regapp;
-            end
-        end else begin
+        if (rx_udp_hdr_valid && rx_udp_hdr_ready) begin
+            cat_echo <= match_echo;
+            cat_reg  <= match_regapp;
+        end else if (rx_udp_payload_axis_tvalid && rx_udp_payload_axis_tready && rx_udp_payload_axis_tlast) begin
             cat_echo <= 1'b0;
             cat_reg  <= 1'b0;
         end
     end
 end
 
-// Header fanout + ready
+// ---------------- RX header+payload routing ----------------
+// Header valid to selected app
 assign app1_rx_hdr_valid    = rx_udp_hdr_valid & match_regapp;
+
+// Fanout header fields (values are valid when their *_hdr_valid is asserted)
 assign app1_rx_ip_src       = rx_udp_ip_source_ip;
 assign app1_rx_ip_dst       = rx_udp_ip_dest_ip;
 assign app1_rx_udp_src_port = rx_udp_source_port;
 assign app1_rx_udp_dst_port = rx_udp_dest_port;
 assign app1_rx_length       = rx_udp_length;
 
-// For echo, we reuse tx_eth_hdr_ready (as in original example) to gate rx header ready
-wire echo_rx_hdr_ready_int  = tx_eth_hdr_ready;
-
-// Drive RX header ready: selected app consumes; otherwise accept and drop
+// IMPORTANT: preserve stock echo gating for 1234, and let app1 accept its own
+// headers. For all other ports, 'accept and drop' to keep RX pipeline moving.
+wire echo_rx_hdr_ready_int  = echo_tx_hdr_ready;
 assign rx_udp_hdr_ready     = match_echo   ? echo_rx_hdr_ready_int :
                               match_regapp ? app1_rx_hdr_ready      :
-                                             1'b1; // drop other ports
+                                             1'b1; // drop others
 
 // Payload demux
 assign app1_rx_tdata   = rx_udp_payload_axis_tdata;
 assign app1_rx_tvalid  = rx_udp_payload_axis_tvalid & cat_reg;
-assign app1_rx_tlast   = rx_udp_payload_axis_tlast;
+assign app1_rx_tlast   = rx_udp_payload_axis_tlast & cat_reg;
 
 assign rx_fifo_udp_payload_axis_tdata  = rx_udp_payload_axis_tdata;
 assign rx_fifo_udp_payload_axis_tvalid = rx_udp_payload_axis_tvalid & cat_echo;
-assign rx_fifo_udp_payload_axis_tlast  = rx_udp_payload_axis_tlast;
+assign rx_fifo_udp_payload_axis_tlast  = rx_udp_payload_axis_tlast & cat_echo;
 
+// Backpressure to selected sink
 assign rx_udp_payload_axis_tready = cat_echo ? rx_fifo_udp_payload_axis_tready :
                                      cat_reg ? app1_rx_tready :
                                                1'b1; // drop others
 
-// -----------------------------------------------------------------------------
-// Echo defaults (when app1 is not active on TX)
-// -----------------------------------------------------------------------------
-assign tx_udp_ip_dscp      = 6'd0;
-assign tx_udp_ip_ecn       = 2'd0;
-assign tx_udp_ip_ttl       = 8'd64;
-assign tx_udp_checksum     = 16'd0;
+/// Echo side (unchanged fields)
+assign tx_udp_ip_dscp  = 6'd0;
+assign tx_udp_ip_ecn   = 2'd0;
+assign tx_udp_ip_ttl   = 8'd64;
+assign tx_udp_checksum = 16'd0;
 
-// Echo generates header valid on 1234
+// Echo header-valid matches stock condition
 wire echo_tx_hdr_valid = rx_udp_hdr_valid & match_echo;
 
-// We DO NOT drive tx_udp_hdr_ready (it is an input from udp_complete).
-// Instead, provide per-app "ready" derived from tx_udp_hdr_ready:
-assign app1_tx_hdr_ready = tx_udp_hdr_ready & app1_tx_hdr_valid;
-wire   echo_tx_hdr_ready = tx_udp_hdr_ready & ~app1_tx_hdr_valid;
+// Latch TX payload source per packet so payload routing does not depend on
+// one-cycle header-valid pulses.
+reg tx_sel_app1 = 1'b0;
+always @(posedge clk) begin
+    if (rst) begin
+        tx_sel_app1 <= 1'b0;
+    end else begin
+        if (tx_udp_hdr_valid && tx_udp_hdr_ready) begin
+            tx_sel_app1 <= app1_tx_hdr_valid;
+        end else if (tx_udp_payload_axis_tvalid && tx_udp_payload_axis_tready && tx_udp_payload_axis_tlast) begin
+            tx_sel_app1 <= 1'b0;
+        end
+    end
+end
 
-// Final TX header valid (priority to app1)
+// Priority: app1 (bridge) > echo
 assign tx_udp_hdr_valid    = app1_tx_hdr_valid | echo_tx_hdr_valid;
 
-// Final TX header fields
+// Proper backpressure to sources
+assign app1_tx_hdr_ready   = tx_udp_hdr_ready &  app1_tx_hdr_valid;
+assign echo_tx_hdr_ready   = tx_udp_hdr_ready & ~app1_tx_hdr_valid;
+
+// Header fields
 assign tx_udp_ip_source_ip = app1_tx_hdr_valid ? app1_tx_ip_src       : local_ip;
 assign tx_udp_ip_dest_ip   = app1_tx_hdr_valid ? app1_tx_ip_dst       : rx_udp_ip_source_ip;
 assign tx_udp_source_port  = app1_tx_hdr_valid ? app1_tx_udp_src_port : rx_udp_dest_port;
 assign tx_udp_dest_port    = app1_tx_hdr_valid ? app1_tx_udp_dst_port : rx_udp_source_port;
 assign tx_udp_length       = app1_tx_hdr_valid ? app1_tx_length       : rx_udp_length;
 
-// TX payload mux (priority to app1)
-assign tx_udp_payload_axis_tdata  = app1_tx_hdr_valid ? app1_tx_tdata  : tx_fifo_udp_payload_axis_tdata;
-assign tx_udp_payload_axis_tvalid = app1_tx_hdr_valid ? app1_tx_tvalid : tx_fifo_udp_payload_axis_tvalid;
-assign tx_udp_payload_axis_tlast  = app1_tx_hdr_valid ? app1_tx_tlast  : tx_fifo_udp_payload_axis_tlast;
-assign tx_udp_payload_axis_tuser  = app1_tx_hdr_valid ? 1'b0           : tx_fifo_udp_payload_axis_tuser;
+// Payload mux
+assign tx_udp_payload_axis_tdata  = tx_sel_app1 ? app1_tx_tdata  : tx_fifo_udp_payload_axis_tdata;
+assign tx_udp_payload_axis_tvalid = tx_sel_app1 ? app1_tx_tvalid : tx_fifo_udp_payload_axis_tvalid;
+assign tx_udp_payload_axis_tlast  = tx_sel_app1 ? app1_tx_tlast  : tx_fifo_udp_payload_axis_tlast;
+assign tx_udp_payload_axis_tuser  = tx_sel_app1 ? 1'b0           : tx_fifo_udp_payload_axis_tuser;
 
-// Backpressure to sources
-assign app1_tx_tready             = app1_tx_hdr_valid ? tx_udp_payload_axis_tready : 1'b0;
-assign tx_fifo_udp_payload_axis_tready = app1_tx_hdr_valid ? 1'b0 : tx_udp_payload_axis_tready;
-
+// Backpressure on payload stream
+assign app1_tx_tready             = tx_sel_app1 ? tx_udp_payload_axis_tready : 1'b0;
+assign tx_fifo_udp_payload_axis_tready = tx_sel_app1 ? 1'b0 : tx_udp_payload_axis_tready;
 // -----------------------------------------------------------------------------
 // Register bridge (UDP/10000) and small AXI-Lite regs (REG3[7:0] -> LEDs)
 // -----------------------------------------------------------------------------
@@ -488,7 +500,33 @@ always @(posedge clk) begin
     end
 end
 
-assign led         = regs_led | led_reg;
+// --- DEBUG PULSES ---
+// LED7: header accepted for port 10000 (RX demux works)
+// LED6: bridge won a TX header handshake (TX arbiter works)
+
+reg [23:0] rx_pulse, tx_pulse;
+always @(posedge clk) begin
+    if (rst) begin
+        rx_pulse <= 24'd0;
+        tx_pulse <= 24'd0;
+    end else begin
+        if (app1_rx_hdr_valid && app1_rx_hdr_ready)
+            rx_pulse <= 24'hFFFFFF;
+        else if (rx_pulse != 0)
+            rx_pulse <= rx_pulse - 1;
+
+        if (app1_tx_hdr_valid && app1_tx_hdr_ready)
+            tx_pulse <= 24'hFFFFFF;
+        else if (tx_pulse != 0)
+            tx_pulse <= tx_pulse - 1;
+    end
+end
+
+wire led_rx = |rx_pulse;  // LED7
+wire led_tx = |tx_pulse;  // LED6
+
+// Combine with existing LED drivers (regs_led and echo's led_reg)
+assign led = ({led_rx, led_tx, 6'b0} | {2'b00, regs_led[5:0]} | led_reg);
 assign phy_reset_n = ~rst;
 
 assign uart_txd = 1'b0;
@@ -772,6 +810,7 @@ udp_payload_fifo (
     .status_bad_frame(),
     .status_good_frame()
 );
+
 
 endmodule
 

@@ -218,12 +218,13 @@ module udp_axi_lite_bridge #
 
             ST_DO_AW: begin
                 M_AXI_AWVALID = 1'b1;
-                if (M_AXI_AWREADY) state_next = ST_DO_W;
+                M_AXI_WVALID = 1'b1;
+                if (M_AXI_AWREADY && M_AXI_WREADY) state_next = ST_WAIT_B;
             end
 
             ST_DO_W: begin
-                M_AXI_WVALID = 1'b1;
-                if (M_AXI_WREADY) state_next = ST_WAIT_B;
+                // Unused: keep state for compatibility with existing localparams
+                state_next = ST_DO_AW;
             end
 
             ST_WAIT_B: begin
