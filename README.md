@@ -1,5 +1,7 @@
 # EEE299 KC705 Design Documentation (branch1)
 
+ Correct flash part to store .bin is Micron MT25QL128ABA8ESF-0SIT (128 Mbit = 16 MB Quad-SPI Flash)
+
 This file documents the key modules and host utility in this branch:
 - `eee299_KC705/rtl/KC705_EEE299_top.v`
 - `eee299_KC705/rtl/fpga_core.v`
