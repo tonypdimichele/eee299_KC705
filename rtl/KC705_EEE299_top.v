@@ -1,26 +1,20 @@
 /*
-
-Copyright (c) 2014-2018 Alex Forencich
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-*/
+ * KC705 EEE299 top-level design
+ *
+ * The Ethernet subsystem in this design is based on Alex Forencich's
+ * verilog-ethernet KC705 implementation.
+ *
+ * System integration and application design by Tony DiMichele.
+ *
+ * Project intent:
+ * - Implement a streaming I/Q modulation and demodulation scheme
+ * - Support power and beam alignment workflows
+ * - Enable path loss measurement and related channel characterization
+ * - Interface with a Sivers EVK06002 mmWave kit
+ *
+ * Host/control path:
+ * - A Raspberry Pi connects to the KC705 via UDP over Ethernet
+ */
 
 // Language: Verilog 2001
 
@@ -31,7 +25,7 @@ THE SOFTWARE.
 /*
  * FPGA top-level module
  */
-module fpga (
+module KC705_EEE299_top (
     /*
      * Clock: 200MHz
      * Reset: Push button, active high
@@ -337,6 +331,10 @@ phy_rx_ctl_idelay (
     .REGRST(1'b0)
 );
 
+// Ethernet data path in this integration is based on Alex Forencich's
+// verilog-ethernet KC705 design. This system is adapted for streaming I/Q
+// modulation/demodulation experiments with Sivers EVK06002 and UDP host
+// connectivity from a Raspberry Pi.
 fpga_core #(
     .TARGET("XILINX")
 )

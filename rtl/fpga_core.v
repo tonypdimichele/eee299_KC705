@@ -20,6 +20,15 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
 
+/* Addition's made to fpga_core.v
+ * UDP application routing note:
+ * The UDP AXI-Lite bridge enables multiple UDP application ports to coexist
+ * on the same Ethernet/UDP stack in this design. Current ports are:
+ * - UDP/1234: echo path
+ * - UDP/10000: AXI-Lite register access bridge
+ * - Tony DiMichele Feb 2026
+ */
+
 // Language: Verilog 2001
 
 `resetall
