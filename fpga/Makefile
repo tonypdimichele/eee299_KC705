@@ -55,6 +55,9 @@ XDC_FILES += xdc/eth_mac_fifo.tcl
 XDC_FILES += xdc/axis_async_fifo.tcl
 XDC_FILES += xdc/sync_reset.tcl
 
+# XCI files
+XCI_FILES += ip/dds_compiler_0/dds_compiler_0.xci
+
 include ../common/vivado.mk
 
 program: $(FPGA_TOP).bit
@@ -67,4 +70,3 @@ program: $(FPGA_TOP).bit
 	echo "program_hw_devices [current_hw_device]" >> program.tcl
 	echo "exit" >> program.tcl
 	vivado -nojournal -nolog -mode batch -source program.tcl
-

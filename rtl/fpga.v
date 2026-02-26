@@ -36,40 +36,48 @@ module fpga (
      * Clock: 200MHz
      * Reset: Push button, active high
      */
-    input  wire       clk_200mhz_p,
-    input  wire       clk_200mhz_n,
-    input  wire       reset,
+    input  wire       CLK_200MHZ_P,
+    input  wire       CLK_200MHZ_N,
+    input  wire       RESET,
 
     /*
      * GPIO
      */
-    input  wire       btnu,
-    input  wire       btnl,
-    input  wire       btnd,
-    input  wire       btnr,
-    input  wire       btnc,
-    input  wire [3:0] sw,
-    output wire [7:0] led,
+    input  wire       BTNU,
+    input  wire       BTNL,
+    input  wire       BTND,
+    input  wire       BTNR,
+    input  wire       BTNC,
+    input  wire [3:0] SW,
+    output wire [7:0] LED,
 
     /*
      * Ethernet: 1000BASE-T RGMII
      */
-    input  wire       phy_rx_clk,
-    input  wire [3:0] phy_rxd,
-    input  wire       phy_rx_ctl,
-    output wire       phy_tx_clk,
-    output wire [3:0] phy_txd,
-    output wire       phy_tx_ctl,
-    output wire       phy_reset_n,
-    input  wire       phy_int_n,
+    input  wire       PHY_RX_CLK,
+    input  wire [3:0] PHY_RXD,
+    input  wire       PHY_RX_CTL,
+    output wire       PHY_TX_CLK,
+    output wire [3:0] PHY_TXD,
+    output wire       PHY_TX_CTL,
+    output wire       PHY_RESET_N,
+    input  wire       PHY_INT_N,
 
     /*
      * UART: 500000 bps, 8N1
      */
-    input  wire       uart_rxd,
-    output wire       uart_txd,
-    output wire       uart_rts,
-    input  wire       uart_cts
+    input  wire       UART_RXD,
+    output wire       UART_TXD,
+    output wire       UART_RTS,
+    input  wire       UART_CTS,
+
+    /*
+     * FMC DAC
+     */
+    output wire       FMC_LPC_LA16_P,
+    output wire       FMC_LPC_LA16_N,
+    output wire       FMC_LPC_LA14_P,
+    output wire       FMC_LPC_LA14_N
 );
 
 // Clock and reset
@@ -86,14 +94,14 @@ wire rst_int;
 wire clk_200mhz_mmcm_out;
 wire clk_200mhz_int;
 
-wire mmcm_rst = reset;
+wire mmcm_rst = RESET;
 wire mmcm_locked;
 wire mmcm_clkfb;
 
 IBUFGDS
 clk_200mhz_ibufgds_inst(
-    .I(clk_200mhz_p),
-    .IB(clk_200mhz_n),
+    .I(CLK_200MHZ_P),
+    .IB(CLK_200MHZ_N),
     .O(clk_200mhz_ibufg)
 );
 
@@ -201,12 +209,12 @@ debounce_switch #(
 debounce_switch_inst (
     .clk(clk_int),
     .rst(rst_int),
-    .in({btnu,
-        btnl,
-        btnd,
-        btnr,
-        btnc,
-        sw}),
+    .in({BTNU,
+        BTNL,
+        BTND,
+        BTNR,
+        BTNC,
+        SW}),
     .out({btnu_int,
         btnl_int,
         btnd_int,
@@ -224,7 +232,7 @@ sync_signal #(
 )
 sync_signal_inst (
     .clk(clk_int),
-    .in({uart_rxd, uart_cts}),
+    .in({UART_RXD, UART_CTS}),
     .out({uart_rxd_int, uart_cts_int})
 );
 
@@ -243,7 +251,7 @@ IDELAYE2 #(
     .IDELAY_TYPE("FIXED")
 )
 phy_rxd_idelay_0 (
-    .IDATAIN(phy_rxd[0]),
+    .IDATAIN(PHY_RXD[0]),
     .DATAOUT(phy_rxd_delay[0]),
     .DATAIN(1'b0),
     .C(1'b0),
@@ -261,7 +269,7 @@ IDELAYE2 #(
     .IDELAY_TYPE("FIXED")
 )
 phy_rxd_idelay_1 (
-    .IDATAIN(phy_rxd[1]),
+    .IDATAIN(PHY_RXD[1]),
     .DATAOUT(phy_rxd_delay[1]),
     .DATAIN(1'b0),
     .C(1'b0),
@@ -279,7 +287,7 @@ IDELAYE2 #(
     .IDELAY_TYPE("FIXED")
 )
 phy_rxd_idelay_2 (
-    .IDATAIN(phy_rxd[2]),
+    .IDATAIN(PHY_RXD[2]),
     .DATAOUT(phy_rxd_delay[2]),
     .DATAIN(1'b0),
     .C(1'b0),
@@ -297,7 +305,7 @@ IDELAYE2 #(
     .IDELAY_TYPE("FIXED")
 )
 phy_rxd_idelay_3 (
-    .IDATAIN(phy_rxd[3]),
+    .IDATAIN(PHY_RXD[3]),
     .DATAOUT(phy_rxd_delay[3]),
     .DATAIN(1'b0),
     .C(1'b0),
@@ -315,7 +323,7 @@ IDELAYE2 #(
     .IDELAY_TYPE("FIXED")
 )
 phy_rx_ctl_idelay (
-    .IDATAIN(phy_rx_ctl),
+    .IDATAIN(PHY_RX_CTL),
     .DATAOUT(phy_rx_ctl_delay),
     .DATAIN(1'b0),
     .C(1'b0),
@@ -349,26 +357,43 @@ core_inst (
     .btnr(btnr_int),
     .btnc(btnc_int),
     .sw(sw_int),
-    .led(led),
+    .led(LED),
     /*
      * Ethernet: 1000BASE-T RGMII
      */
-    .phy_rx_clk(phy_rx_clk),
+    .phy_rx_clk(PHY_RX_CLK),
     .phy_rxd(phy_rxd_delay),
     .phy_rx_ctl(phy_rx_ctl_delay),
-    .phy_tx_clk(phy_tx_clk),
-    .phy_txd(phy_txd),
-    .phy_tx_ctl(phy_tx_ctl),
-    .phy_reset_n(phy_reset_n),
-    .phy_int_n(phy_int_n),
+    .phy_tx_clk(PHY_TX_CLK),
+    .phy_txd(PHY_TXD),
+    .phy_tx_ctl(PHY_TX_CTL),
+    .phy_reset_n(PHY_RESET_N),
+    .phy_int_n(PHY_INT_N),
     /*
      * UART: 115200 bps, 8N1
      */
     .uart_rxd(uart_rxd_int),
-    .uart_txd(uart_txd),
-    .uart_rts(uart_rts),
+    .uart_txd(UART_TXD),
+    .uart_rts(UART_RTS),
     .uart_cts(uart_cts_int)
 );
+
+wire tvalid_dummy;
+wire [31:0] tdata_dummy;
+wire tvalid_phase_dummy;
+wire [15:0] tdata_phase_dummy;
+
+//----------- Begin Cut here for INSTANTIATION Template ---// INST_TAG
+ dds_compiler_0 dds_tx_side (
+  .aclk(clk_mmcm_out),                                // input wire aclk
+  .aresetn(rst_int),                          // input wire aresetn
+  .m_axis_data_tvalid(tvalid_dummy),    // output wire m_axis_data_tvalid
+  .m_axis_data_tdata(tdata_dummy),      // output wire [31 : 0] m_axis_data_tdata
+  .m_axis_phase_tvalid(tvalid_phase_dummy),  // output wire m_axis_phase_tvalid
+  .m_axis_phase_tdata(tdata_phase_dummy)    // output wire [15 : 0] m_axis_phase_tdata
+); 
+
+
 
 endmodule
 
