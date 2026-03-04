@@ -335,10 +335,10 @@ phy_rx_ctl_idelay (
 // verilog-ethernet KC705 design. This system is adapted for streaming I/Q
 // modulation/demodulation experiments with Sivers EVK06002 and UDP host
 // connectivity from a Raspberry Pi.
-fpga_core #(
+ethernet_subsystem #(
     .TARGET("XILINX")
 )
-core_inst (
+ethernet_subsystem (
     /*
      * Clock: 125MHz
      * Synchronous reset

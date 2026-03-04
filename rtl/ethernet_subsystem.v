@@ -38,7 +38,7 @@ THE SOFTWARE.
 /*
  * FPGA core logic
  */
-module fpga_core #
+module ethernet_subsystem #
 (
     parameter TARGET = "GENERIC"
 )

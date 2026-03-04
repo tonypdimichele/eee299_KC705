@@ -6,7 +6,7 @@ FPGA_ARCH = kintex7
 
 # Files for synthesis
 SYN_FILES = rtl/KC705_EEE299_top.v
-SYN_FILES += rtl/fpga_core.v
+SYN_FILES += rtl/ethernet_subsystem.v
 SYN_FILES += rtl/debounce_switch.v
 SYN_FILES += rtl/sync_signal.v
 SYN_FILES += rtl/udp_axi_lite_bridge.v
