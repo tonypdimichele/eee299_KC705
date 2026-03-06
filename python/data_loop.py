@@ -170,8 +170,4 @@ def main() -> int:
 
 if __name__ == "__main__":
 	sys.exit(main())
-from regs import send_req, udp_read, udp_write
-
-
-def main():
 
