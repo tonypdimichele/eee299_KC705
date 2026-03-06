@@ -80,7 +80,21 @@ module ethernet_subsystem #
     input  wire       uart_rxd,
     output wire       uart_txd,
     output wire       uart_rts,
-    input  wire       uart_cts
+    input  wire       uart_cts,
+
+    /*
+     * External AXIS stream interface
+     *   m_axis_rpi_rx_* : UDP/20000 payload out of subsystem (RPi -> fabric)
+     *   s_axis_rpi_tx_* : UDP/30000 payload into subsystem (fabric -> RPi)
+     */
+    output wire [7:0] m_axis_rpi_rx_tdata,
+    output wire       m_axis_rpi_rx_tvalid,
+    input  wire       m_axis_rpi_rx_tready,
+    output wire       m_axis_rpi_rx_tlast,
+    input  wire [7:0] s_axis_rpi_tx_tdata,
+    input  wire       s_axis_rpi_tx_tvalid,
+    output wire       s_axis_rpi_tx_tready,
+    input  wire       s_axis_rpi_tx_tlast
 );
 
 // -----------------------------------------------------------------------------
@@ -256,14 +270,72 @@ wire         app1_tx_tready;
 wire         app1_tx_tlast;
 
 // Point-to-point AXI-Lite between register app and regs block
-wire [31:0] rb_AWADDR, rb_WDATA, rb_ARADDR, rb_RDATA;
-wire [3:0]  rb_WSTRB;
-wire        rb_AWVALID, rb_AWREADY, rb_WVALID, rb_WREADY;
-wire [1:0]  rb_BRESP;
-wire        rb_BVALID, rb_BREADY, rb_ARVALID, rb_ARREADY, rb_RVALID, rb_RREADY;
-wire [1:0]  rb_RRESP;
+wire [31:0] rb_AWADDR [0:2], rb_WDATA [0:2], rb_ARADDR [0:2], rb_RDATA [0:2];
+wire [3:0]  rb_WSTRB [0:2];
+wire        rb_AWVALID [0:2], rb_AWREADY [0:2], rb_WVALID [0:2], rb_WREADY [0:2];
+wire [1:0]  rb_BRESP [0:2];
+wire        rb_BVALID [0:2], rb_BREADY [0:2], rb_ARVALID [0:2], rb_ARREADY [0:2], rb_RVALID [0:2], rb_RREADY [0:2];
+wire [1:0]  rb_RRESP [0:2];
 
 wire [7:0]  regs_led;
+
+// -----------------------------------------------------------------------------
+// App 2 (AXI_STREAMING FROM RPi to KC705 over UDP)
+// -----------------------------------------------------------------------------
+wire         app2_rx_hdr_valid;
+wire         app2_rx_hdr_ready;
+wire [31:0]  app2_rx_ip_src;
+wire [31:0]  app2_rx_ip_dst;
+wire [15:0]  app2_rx_udp_src_port;
+wire [15:0]  app2_rx_udp_dst_port;
+wire [15:0]  app2_rx_length;
+
+wire [7:0]   app2_rx_tdata;
+wire         app2_rx_tvalid;
+wire         app2_rx_tready;
+wire         app2_rx_tlast;
+
+wire         app2_tx_hdr_valid;
+wire         app2_tx_hdr_ready;
+wire [31:0]  app2_tx_ip_dst;
+wire [31:0]  app2_tx_ip_src;
+wire [15:0]  app2_tx_udp_dst_port;
+wire [15:0]  app2_tx_udp_src_port;
+wire [15:0]  app2_tx_length;
+
+wire [7:0]   app2_tx_tdata;
+wire         app2_tx_tvalid;
+wire         app2_tx_tready;
+wire         app2_tx_tlast;
+
+// -----------------------------------------------------------------------------
+// App 3 (AXI_STREAMING FROM KC705 to RPi over UDP)
+// -----------------------------------------------------------------------------
+wire         app3_rx_hdr_valid;
+wire         app3_rx_hdr_ready;
+wire [31:0]  app3_rx_ip_src;
+wire [31:0]  app3_rx_ip_dst;
+wire [15:0]  app3_rx_udp_src_port;
+wire [15:0]  app3_rx_udp_dst_port;
+wire [15:0]  app3_rx_length;
+
+wire [7:0]   app3_rx_tdata;
+wire         app3_rx_tvalid;
+wire         app3_rx_tready;
+wire         app3_rx_tlast;
+
+wire         app3_tx_hdr_valid;
+wire         app3_tx_hdr_ready;
+wire [31:0]  app3_tx_ip_dst;
+wire [31:0]  app3_tx_ip_src;
+wire [15:0]  app3_tx_udp_dst_port;
+wire [15:0]  app3_tx_udp_src_port;
+wire [15:0]  app3_tx_length;
+
+wire [7:0]   app3_tx_tdata;
+wire         app3_tx_tvalid;
+wire         app3_tx_tready;
+wire         app3_tx_tlast;
 
 // -----------------------------------------------------------------------------
 // Configuration
@@ -293,31 +365,42 @@ assign tx_ip_payload_axis_tuser   = 1'b0;
 // -----------------------------------------------------------------------------
 // UDP application routing
 //   - Echo on port 1234 (stock behavior)
-//   - Register bridge on port 10000 (new)
+//   - Register bridge on port 10000
+//   - AXI-STREAM RPi to KC705 on port 20000 (ingress)
+//   - AXI-STREAM KC705 to RPi on port 30000 (egress)
 // -----------------------------------------------------------------------------
 wire match_echo   = (rx_udp_dest_port == 16'd1234);
-wire match_regapp = (rx_udp_dest_port == 16'd10000);
-
+wire match_reg_app = (rx_udp_dest_port == 16'd10000);
+wire match_stream_rpi_to_kc705_app = (rx_udp_dest_port == 16'd20000);
+wire match_stream_kc705_to_rpi_app = (rx_udp_dest_port == 16'd30000);
 // Category latch per payload frame (prevents mid-frame switching)
-reg cat_echo = 1'b0, cat_reg = 1'b0;
+reg cat_echo = 1'b0, cat_reg = 1'b0, cat_stream_from_rpi = 1'b0, cat_stream_from_kc705 = 1'b0;
 always @(posedge clk) begin
     if (rst) begin
         cat_echo <= 1'b0;
         cat_reg  <= 1'b0;
+        cat_stream_from_rpi <= 1'b0;
+        cat_stream_from_kc705 <= 1'b0;
     end else begin
         if (rx_udp_hdr_valid && rx_udp_hdr_ready) begin
             cat_echo <= match_echo;
-            cat_reg  <= match_regapp;
+            cat_reg  <= match_reg_app;
+            cat_stream_from_rpi <= match_stream_rpi_to_kc705_app;
+            cat_stream_from_kc705 <= match_stream_kc705_to_rpi_app;
         end else if (rx_udp_payload_axis_tvalid && rx_udp_payload_axis_tready && rx_udp_payload_axis_tlast) begin
             cat_echo <= 1'b0;
             cat_reg  <= 1'b0;
+            cat_stream_from_rpi <= 1'b0;
+            cat_stream_from_kc705 <= 1'b0;
         end
     end
 end
 
 // ---------------- RX header+payload routing ----------------
 // Header valid to selected app
-assign app1_rx_hdr_valid    = rx_udp_hdr_valid & match_regapp;
+assign app1_rx_hdr_valid    = rx_udp_hdr_valid & match_reg_app;
+assign app2_rx_hdr_valid    = rx_udp_hdr_valid & match_stream_rpi_to_kc705_app;
+assign app3_rx_hdr_valid    = rx_udp_hdr_valid & match_stream_kc705_to_rpi_app;
 
 // Fanout header fields (values are valid when their *_hdr_valid is asserted)
 assign app1_rx_ip_src       = rx_udp_ip_source_ip;
@@ -326,11 +409,25 @@ assign app1_rx_udp_src_port = rx_udp_source_port;
 assign app1_rx_udp_dst_port = rx_udp_dest_port;
 assign app1_rx_length       = rx_udp_length;
 
-// IMPORTANT: preserve stock echo gating for 1234, and let app1 accept its own
+assign app2_rx_ip_src       = rx_udp_ip_source_ip;
+assign app2_rx_ip_dst       = rx_udp_ip_dest_ip;
+assign app2_rx_udp_src_port = rx_udp_source_port;
+assign app2_rx_udp_dst_port = rx_udp_dest_port;
+assign app2_rx_length       = rx_udp_length;
+
+assign app3_rx_ip_src       = rx_udp_ip_source_ip;
+assign app3_rx_ip_dst       = rx_udp_ip_dest_ip;
+assign app3_rx_udp_src_port = rx_udp_source_port;
+assign app3_rx_udp_dst_port = rx_udp_dest_port;
+assign app3_rx_length       = rx_udp_length;
+
+// IMPORTANT: preserve stock echo gating for 1234, and let app1,2,3 accept its own
 // headers. For all other ports, 'accept and drop' to keep RX pipeline moving.
 wire echo_rx_hdr_ready_int  = echo_tx_hdr_ready;
 assign rx_udp_hdr_ready     = match_echo   ? echo_rx_hdr_ready_int :
-                              match_regapp ? app1_rx_hdr_ready      :
+                              match_reg_app ? app1_rx_hdr_ready      :
+                              match_stream_rpi_to_kc705_app ? app2_rx_hdr_ready :
+                              match_stream_kc705_to_rpi_app ? app3_rx_hdr_ready :
                                              1'b1; // drop others
 
 // Payload demux
@@ -338,13 +435,27 @@ assign app1_rx_tdata   = rx_udp_payload_axis_tdata;
 assign app1_rx_tvalid  = rx_udp_payload_axis_tvalid & cat_reg;
 assign app1_rx_tlast   = rx_udp_payload_axis_tlast & cat_reg;
 
+assign app2_rx_tdata   = rx_udp_payload_axis_tdata;
+assign app2_rx_tvalid  = rx_udp_payload_axis_tvalid & cat_stream_from_rpi;
+assign app2_rx_tlast   = rx_udp_payload_axis_tlast & cat_stream_from_rpi;
+
+assign app3_rx_tdata   = rx_udp_payload_axis_tdata;
+assign app3_rx_tvalid  = rx_udp_payload_axis_tvalid & cat_stream_from_kc705;
+assign app3_rx_tlast   = rx_udp_payload_axis_tlast & cat_stream_from_kc705;
+
+// Port 30000 is TX service in this build; accept-and-drop inbound payload.
+assign app3_rx_hdr_ready = 1'b1;
+assign app3_rx_tready    = 1'b1;
+
 assign rx_fifo_udp_payload_axis_tdata  = rx_udp_payload_axis_tdata;
 assign rx_fifo_udp_payload_axis_tvalid = rx_udp_payload_axis_tvalid & cat_echo;
 assign rx_fifo_udp_payload_axis_tlast  = rx_udp_payload_axis_tlast & cat_echo;
 
 // Backpressure to selected sink
 assign rx_udp_payload_axis_tready = cat_echo ? rx_fifo_udp_payload_axis_tready :
-                                     cat_reg ? app1_rx_tready :
+                                    cat_reg ? app1_rx_tready :
+                                    cat_stream_from_rpi ? app2_rx_tready :
+                                    cat_stream_from_kc705 ? app3_rx_tready :
                                                1'b1; // drop others
 
 /// Echo side (unchanged fields)
@@ -358,46 +469,85 @@ wire echo_tx_hdr_valid = rx_udp_hdr_valid & match_echo;
 
 // Latch TX payload source per packet so payload routing does not depend on
 // one-cycle header-valid pulses.
-reg tx_sel_app1 = 1'b0;
+reg [2:0] tx_sel_app = 3'b0;
 always @(posedge clk) begin
     if (rst) begin
-        tx_sel_app1 <= 1'b0;
+        tx_sel_app <= 3'b0;
     end else begin
         if (tx_udp_hdr_valid && tx_udp_hdr_ready) begin
-            tx_sel_app1 <= app1_tx_hdr_valid;
+            tx_sel_app <= {app3_tx_hdr_valid, app2_tx_hdr_valid, app1_tx_hdr_valid};
         end else if (tx_udp_payload_axis_tvalid && tx_udp_payload_axis_tready && tx_udp_payload_axis_tlast) begin
-            tx_sel_app1 <= 1'b0;
+            tx_sel_app <= 3'b0;
         end
     end
 end
 
-// Priority: app1 (bridge) > echo
-assign tx_udp_hdr_valid    = app1_tx_hdr_valid | echo_tx_hdr_valid;
+// Priority: app3 (bridge) > app2 (bridge) > app1 (bridge) > echo
+assign tx_udp_hdr_valid    = app3_tx_hdr_valid | app2_tx_hdr_valid | app1_tx_hdr_valid | echo_tx_hdr_valid;
 
 // Proper backpressure to sources
-assign app1_tx_hdr_ready   = tx_udp_hdr_ready &  app1_tx_hdr_valid;
-assign echo_tx_hdr_ready   = tx_udp_hdr_ready & ~app1_tx_hdr_valid;
+assign app3_tx_hdr_ready   = tx_udp_hdr_ready &  app3_tx_hdr_valid;
+assign app2_tx_hdr_ready   = tx_udp_hdr_ready & ~app3_tx_hdr_valid & app2_tx_hdr_valid;
+assign app1_tx_hdr_ready   = tx_udp_hdr_ready & ~app3_tx_hdr_valid & ~app2_tx_hdr_valid & app1_tx_hdr_valid;
+assign echo_tx_hdr_ready   = tx_udp_hdr_ready & ~app3_tx_hdr_valid & ~app2_tx_hdr_valid & ~app1_tx_hdr_valid;
 
 // Header fields
-assign tx_udp_ip_source_ip = app1_tx_hdr_valid ? app1_tx_ip_src       : local_ip;
-assign tx_udp_ip_dest_ip   = app1_tx_hdr_valid ? app1_tx_ip_dst       : rx_udp_ip_source_ip;
-assign tx_udp_source_port  = app1_tx_hdr_valid ? app1_tx_udp_src_port : rx_udp_dest_port;
-assign tx_udp_dest_port    = app1_tx_hdr_valid ? app1_tx_udp_dst_port : rx_udp_source_port;
-assign tx_udp_length       = app1_tx_hdr_valid ? app1_tx_length       : rx_udp_length;
+assign tx_udp_ip_source_ip = app3_tx_hdr_valid ? app3_tx_ip_src       :
+                             app2_tx_hdr_valid ? app2_tx_ip_src       :
+                             app1_tx_hdr_valid ? app1_tx_ip_src       : local_ip;
+assign tx_udp_ip_dest_ip   = app3_tx_hdr_valid ? app3_tx_ip_dst       :
+                             app2_tx_hdr_valid ? app2_tx_ip_dst       :
+                             app1_tx_hdr_valid ? app1_tx_ip_dst       : rx_udp_ip_source_ip;
+                             
+assign tx_udp_source_port  = app3_tx_hdr_valid ? app3_tx_udp_src_port :
+                             app2_tx_hdr_valid ? app2_tx_udp_src_port :
+                             app1_tx_hdr_valid ? app1_tx_udp_src_port : rx_udp_dest_port;
+
+assign tx_udp_dest_port    = app3_tx_hdr_valid ? app3_tx_udp_dst_port :
+                             app2_tx_hdr_valid ? app2_tx_udp_dst_port :
+                             app1_tx_hdr_valid ? app1_tx_udp_dst_port : rx_udp_source_port;
+
+assign tx_udp_length       = app3_tx_hdr_valid ? app3_tx_length       :
+                             app2_tx_hdr_valid ? app2_tx_length       :
+                             app1_tx_hdr_valid ? app1_tx_length       : rx_udp_length;
 
 // Payload mux
-assign tx_udp_payload_axis_tdata  = tx_sel_app1 ? app1_tx_tdata  : tx_fifo_udp_payload_axis_tdata;
-assign tx_udp_payload_axis_tvalid = tx_sel_app1 ? app1_tx_tvalid : tx_fifo_udp_payload_axis_tvalid;
-assign tx_udp_payload_axis_tlast  = tx_sel_app1 ? app1_tx_tlast  : tx_fifo_udp_payload_axis_tlast;
-assign tx_udp_payload_axis_tuser  = tx_sel_app1 ? 1'b0           : tx_fifo_udp_payload_axis_tuser;
+assign tx_udp_payload_axis_tdata  = tx_sel_app == 3'b100 ? app3_tx_tdata  :
+                                    tx_sel_app == 3'b010 ? app2_tx_tdata  :
+                                    tx_sel_app == 3'b001 ? app1_tx_tdata  : tx_fifo_udp_payload_axis_tdata;
+
+assign tx_udp_payload_axis_tvalid = tx_sel_app == 3'b100 ? app3_tx_tvalid :
+                                    tx_sel_app == 3'b010 ? app2_tx_tvalid :
+                                    tx_sel_app == 3'b001 ? app1_tx_tvalid : tx_fifo_udp_payload_axis_tvalid;
+
+assign tx_udp_payload_axis_tlast  = tx_sel_app == 3'b100 ? app3_tx_tlast  :
+                                    tx_sel_app == 3'b010 ? app2_tx_tlast  :
+                                    tx_sel_app == 3'b001 ? app1_tx_tlast  : tx_fifo_udp_payload_axis_tlast;
+
+assign tx_udp_payload_axis_tuser  = tx_sel_app == 3'b100 ? 1'b0           :
+                                    tx_sel_app == 3'b010 ? 1'b0           :
+                                    tx_sel_app == 3'b001 ? 1'b0           : tx_fifo_udp_payload_axis_tuser;
 
 // Backpressure on payload stream
-assign app1_tx_tready             = tx_sel_app1 ? tx_udp_payload_axis_tready : 1'b0;
-assign tx_fifo_udp_payload_axis_tready = tx_sel_app1 ? 1'b0 : tx_udp_payload_axis_tready;
+assign app1_tx_tready             = tx_sel_app == 3'b001 ? tx_udp_payload_axis_tready : 1'b0;
+assign app2_tx_tready             = tx_sel_app == 3'b010 ? tx_udp_payload_axis_tready : 1'b0;
+assign app3_tx_tready             = tx_sel_app == 3'b100 ? tx_udp_payload_axis_tready : 1'b0;
+assign tx_fifo_udp_payload_axis_tready = (tx_sel_app == 3'b100 || tx_sel_app == 3'b010 || tx_sel_app == 3'b001) ? 1'b0 : tx_udp_payload_axis_tready;
+
+// app2 does not source TX packets in this build.
+assign app2_tx_hdr_valid    = 1'b0;
+assign app2_tx_ip_dst       = 32'd0;
+assign app2_tx_ip_src       = 32'd0;
+assign app2_tx_udp_dst_port = 16'd0;
+assign app2_tx_udp_src_port = 16'd0;
+assign app2_tx_length       = 16'd0;
+assign app2_tx_tdata        = 8'd0;
+assign app2_tx_tvalid       = 1'b0;
+assign app2_tx_tlast        = 1'b0;
 // -----------------------------------------------------------------------------
 // Register bridge (UDP/10000) and small AXI-Lite regs (REG3[7:0] -> LEDs)
 // -----------------------------------------------------------------------------
-udp_axi_lite_bridge #(.BRIDGE_PORT(16'd10000)) u_regbridge (
+udp_axi_lite_bridge #(.BRIDGE_PORT(16'd10000)) reg_bridge (
     .clk(clk), .rst(rst),
 
     // UDP RX (from demux)
@@ -429,27 +579,27 @@ udp_axi_lite_bridge #(.BRIDGE_PORT(16'd10000)) u_regbridge (
     .m_udp_tx_tlast(app1_tx_tlast),
 
     // AXI-Lite master
-    .M_AXI_AWADDR(rb_AWADDR),
-    .M_AXI_AWVALID(rb_AWVALID),
-    .M_AXI_AWREADY(rb_AWREADY),
+    .M_AXI_AWADDR(rb_AWADDR[0]),
+    .M_AXI_AWVALID(rb_AWVALID[0]),
+    .M_AXI_AWREADY(rb_AWREADY[0]),
 
-    .M_AXI_WDATA(rb_WDATA),
-    .M_AXI_WSTRB(rb_WSTRB),
-    .M_AXI_WVALID(rb_WVALID),
-    .M_AXI_WREADY(rb_WREADY),
+    .M_AXI_WDATA(rb_WDATA[0]),
+    .M_AXI_WSTRB(rb_WSTRB[0]),
+    .M_AXI_WVALID(rb_WVALID[0]),
+    .M_AXI_WREADY(rb_WREADY[0]),
 
-    .M_AXI_BRESP(rb_BRESP),
-    .M_AXI_BVALID(rb_BVALID),
-    .M_AXI_BREADY(rb_BREADY),
+    .M_AXI_BRESP(rb_BRESP[0]),
+    .M_AXI_BVALID(rb_BVALID[0]),
+    .M_AXI_BREADY(rb_BREADY[0]),
 
-    .M_AXI_ARADDR(rb_ARADDR),
-    .M_AXI_ARVALID(rb_ARVALID),
-    .M_AXI_ARREADY(rb_ARREADY),
+    .M_AXI_ARADDR(rb_ARADDR[0]),
+    .M_AXI_ARVALID(rb_ARVALID[0]),
+    .M_AXI_ARREADY(rb_ARREADY[0]),
 
-    .M_AXI_RDATA(rb_RDATA),
-    .M_AXI_RRESP(rb_RRESP),
-    .M_AXI_RVALID(rb_RVALID),
-    .M_AXI_RREADY(rb_RREADY),
+    .M_AXI_RDATA(rb_RDATA[0]),
+    .M_AXI_RRESP(rb_RRESP[0]),
+    .M_AXI_RVALID(rb_RVALID[0]),
+    .M_AXI_RREADY(rb_RREADY[0]),
 
     .local_ip(local_ip)
 );
@@ -458,30 +608,81 @@ axi_lite_regs u_regs (
     .s_axi_aclk   (clk),
     .s_axi_aresetn(~rst),
 
-    .s_axi_awaddr (rb_AWADDR[5:0]),
-    .s_axi_awvalid(rb_AWVALID),
-    .s_axi_awready(rb_AWREADY),
+    .s_axi_awaddr (rb_AWADDR[0][5:0]),
+    .s_axi_awvalid(rb_AWVALID[0]),
+    .s_axi_awready(rb_AWREADY[0]),
 
-    .s_axi_wdata  (rb_WDATA),
-    .s_axi_wstrb  (rb_WSTRB),
-    .s_axi_wvalid (rb_WVALID),
-    .s_axi_wready (rb_WREADY),
+    .s_axi_wdata  (rb_WDATA[0]),
+    .s_axi_wstrb  (rb_WSTRB[0]),
+    .s_axi_wvalid (rb_WVALID[0]),
+    .s_axi_wready (rb_WREADY[0]),
 
-    .s_axi_bresp  (rb_BRESP),
-    .s_axi_bvalid (rb_BVALID),
-    .s_axi_bready (rb_BREADY),
+    .s_axi_bresp  (rb_BRESP[0]),
+    .s_axi_bvalid (rb_BVALID[0]),
+    .s_axi_bready (rb_BREADY[0]),
 
-    .s_axi_araddr (rb_ARADDR[5:0]),
-    .s_axi_arvalid(rb_ARVALID),
-    .s_axi_arready(rb_ARREADY),
+    .s_axi_araddr (rb_ARADDR[0][5:0]),
+    .s_axi_arvalid(rb_ARVALID[0]),
+    .s_axi_arready(rb_ARREADY[0]),
 
-    .s_axi_rdata  (rb_RDATA),
-    .s_axi_rresp  (rb_RRESP),
-    .s_axi_rvalid (rb_RVALID),
-    .s_axi_rready (rb_RREADY),
+    .s_axi_rdata  (rb_RDATA[0]),
+    .s_axi_rresp  (rb_RRESP[0]),
+    .s_axi_rvalid (rb_RVALID[0]),
+    .s_axi_rready (rb_RREADY[0]),
 
     .reg3_out(regs_led)
 );
+
+// -----------------------------------------------------------------------------
+// External streaming path control:
+//   UDP/20000 ingress metadata is latched and used to drive UDP/30000 egress
+//   while payload data is provided by external logic via s_axis_rpi_tx_*.
+// -----------------------------------------------------------------------------
+reg        app3_loop_hdr_pending = 1'b0;
+reg [31:0] app3_loop_ip_dst      = 32'd0;
+reg [15:0] app3_loop_udp_dst     = 16'd0;
+reg [15:0] app3_loop_len         = 16'd0;
+
+// Only accept a new ingress header when no TX header is pending.
+assign app2_rx_hdr_ready = ~app3_loop_hdr_pending;
+
+always @(posedge clk) begin
+    if (rst) begin
+        app3_loop_hdr_pending <= 1'b0;
+        app3_loop_ip_dst      <= 32'd0;
+        app3_loop_udp_dst     <= 16'd0;
+        app3_loop_len         <= 16'd0;
+    end else begin
+        if (app2_rx_hdr_valid && app2_rx_hdr_ready) begin
+            app3_loop_hdr_pending <= 1'b1;
+            app3_loop_ip_dst      <= app2_rx_ip_src;
+            app3_loop_udp_dst     <= app2_rx_udp_src_port;
+            app3_loop_len         <= app2_rx_length;
+        end
+
+        if (app3_tx_hdr_valid && app3_tx_hdr_ready) begin
+            app3_loop_hdr_pending <= 1'b0;
+        end
+    end
+end
+
+assign app3_tx_hdr_valid    = app3_loop_hdr_pending & s_axis_rpi_tx_tvalid;
+assign app3_tx_ip_dst       = app3_loop_ip_dst;
+assign app3_tx_ip_src       = local_ip;
+assign app3_tx_udp_dst_port = app3_loop_udp_dst;
+assign app3_tx_udp_src_port = 16'd30000;
+assign app3_tx_length       = app3_loop_len;
+
+assign app3_tx_tdata        = s_axis_rpi_tx_tdata;
+assign app3_tx_tvalid       = s_axis_rpi_tx_tvalid;
+assign app3_tx_tlast        = s_axis_rpi_tx_tlast;
+assign s_axis_rpi_tx_tready = app3_tx_tready;
+
+assign m_axis_rpi_rx_tdata  = app2_rx_tdata;
+assign m_axis_rpi_rx_tvalid = app2_rx_tvalid;
+assign m_axis_rpi_rx_tlast  = app2_rx_tlast;
+assign app2_rx_tready       = m_axis_rpi_rx_tready;
+
 
 // -----------------------------------------------------------------------------
 // LED behavior:

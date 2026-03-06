@@ -331,10 +331,22 @@ phy_rx_ctl_idelay (
     .REGRST(1'b0)
 );
 
-// Ethernet data path in this integration is based on Alex Forencich's
-// verilog-ethernet KC705 design. This system is adapted for streaming I/Q
+// This system is adapted for streaming I/Q
 // modulation/demodulation experiments with Sivers EVK06002 and UDP host
 // connectivity from a Raspberry Pi.
+wire [7:0] rpi_ingress_tdata;
+wire       rpi_ingress_tvalid;
+wire       rpi_ingress_tready;
+wire       rpi_ingress_tlast;
+wire [7:0] tx_ring_buffer_tdata;
+wire       tx_ring_buffer_tvalid;
+wire       tx_ring_buffer_tready;
+wire       tx_ring_buffer_tlast;
+wire [7:0] rx_ring_buffer_tdata;
+wire       rx_ring_buffer_tvalid;
+wire       rx_ring_buffer_tready;
+wire       rx_ring_buffer_tlast;
+
 ethernet_subsystem #(
     .TARGET("XILINX")
 )
@@ -373,7 +385,48 @@ ethernet_subsystem (
     .uart_rxd(uart_rxd_int),
     .uart_txd(UART_TXD),
     .uart_rts(UART_RTS),
-    .uart_cts(uart_cts_int)
+    .uart_cts(uart_cts_int),
+
+    .m_axis_rpi_rx_tdata(rpi_ingress_tdata),
+    .m_axis_rpi_rx_tvalid(rpi_ingress_tvalid),
+    .m_axis_rpi_rx_tready(rpi_ingress_tready),
+    .m_axis_rpi_rx_tlast(rpi_ingress_tlast),
+    .s_axis_rpi_tx_tdata(rx_ring_buffer_tdata),
+    .s_axis_rpi_tx_tvalid(rx_ring_buffer_tvalid),
+    .s_axis_rpi_tx_tready(rx_ring_buffer_tready),
+    .s_axis_rpi_tx_tlast(rx_ring_buffer_tlast)
+);
+
+ping_pong_buffer #(
+    .DATA_WIDTH(8),
+    .DEPTH(2048)
+) ping_pong_buffer_tx (
+    .clk(clk_int),
+    .rst(rst_int),
+    .i_s_axis_tdata(rpi_ingress_tdata),
+    .i_s_axis_tvalid(rpi_ingress_tvalid),
+    .o_s_axis_tready(rpi_ingress_tready),
+    .i_s_axis_tlast(rpi_ingress_tlast),
+    .o_m_axis_tdata(tx_ring_buffer_tdata),
+    .o_m_axis_tvalid(tx_ring_buffer_tvalid),
+    .i_m_axis_tready(tx_ring_buffer_tready),
+    .o_m_axis_tlast(tx_ring_buffer_tlast)
+);
+
+ping_pong_buffer #(
+    .DATA_WIDTH(8),
+    .DEPTH(2048)
+) ping_pong_buffer_rx (
+    .clk(clk_int),
+    .rst(rst_int),
+    .i_s_axis_tdata(tx_ring_buffer_tdata),
+    .i_s_axis_tvalid(tx_ring_buffer_tvalid),
+    .o_s_axis_tready(tx_ring_buffer_tready),
+    .i_s_axis_tlast(tx_ring_buffer_tlast),
+    .o_m_axis_tdata(rx_ring_buffer_tdata),
+    .o_m_axis_tvalid(rx_ring_buffer_tvalid),
+    .i_m_axis_tready(rx_ring_buffer_tready),
+    .o_m_axis_tlast(rx_ring_buffer_tlast)
 );
 
 wire tvalid_dummy;
