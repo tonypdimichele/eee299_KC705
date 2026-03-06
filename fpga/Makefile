@@ -1,12 +1,13 @@
 
 # FPGA settings
 FPGA_PART = xc7k325tffg900-2
-FPGA_TOP = fpga
+FPGA_TOP = KC705_EEE299_top
 FPGA_ARCH = kintex7
 
 # Files for synthesis
-SYN_FILES = rtl/fpga.v
-SYN_FILES += rtl/fpga_core.v
+SYN_FILES = rtl/KC705_EEE299_top.v
+SYN_FILES += rtl/ethernet_subsystem.v
+SYN_FILES += rtl/ping_pong_buffer.sv
 SYN_FILES += rtl/debounce_switch.v
 SYN_FILES += rtl/sync_signal.v
 SYN_FILES += rtl/udp_axi_lite_bridge.v
@@ -55,6 +56,9 @@ XDC_FILES += xdc/eth_mac_fifo.tcl
 XDC_FILES += xdc/axis_async_fifo.tcl
 XDC_FILES += xdc/sync_reset.tcl
 
+# XCI files
+XCI_FILES += ip/dds_compiler_0/dds_compiler_0.xci
+
 include ../common/vivado.mk
 
 program: $(FPGA_TOP).bit
@@ -67,4 +71,3 @@ program: $(FPGA_TOP).bit
 	echo "program_hw_devices [current_hw_device]" >> program.tcl
 	echo "exit" >> program.tcl
 	vivado -nojournal -nolog -mode batch -source program.tcl
-

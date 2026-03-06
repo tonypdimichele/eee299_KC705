@@ -1,26 +1,20 @@
 /*
-
-Copyright (c) 2014-2018 Alex Forencich
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-*/
+ * KC705 EEE299 top-level design
+ *
+ * The Ethernet subsystem in this design is based on Alex Forencich's
+ * verilog-ethernet KC705 implementation.
+ *
+ * System integration and application design by Tony DiMichele.
+ *
+ * Project intent:
+ * - Implement a streaming I/Q modulation and demodulation scheme
+ * - Support power and beam alignment workflows
+ * - Enable path loss measurement and related channel characterization
+ * - Interface with a Sivers EVK06002 mmWave kit
+ *
+ * Host/control path:
+ * - A Raspberry Pi connects to the KC705 via UDP over Ethernet
+ */
 
 // Language: Verilog 2001
 
@@ -31,45 +25,53 @@ THE SOFTWARE.
 /*
  * FPGA top-level module
  */
-module fpga (
+module KC705_EEE299_top (
     /*
      * Clock: 200MHz
      * Reset: Push button, active high
      */
-    input  wire       clk_200mhz_p,
-    input  wire       clk_200mhz_n,
-    input  wire       reset,
+    input  wire       CLK_200MHZ_P,
+    input  wire       CLK_200MHZ_N,
+    input  wire       RESET,
 
     /*
      * GPIO
      */
-    input  wire       btnu,
-    input  wire       btnl,
-    input  wire       btnd,
-    input  wire       btnr,
-    input  wire       btnc,
-    input  wire [3:0] sw,
-    output wire [7:0] led,
+    input  wire       BTNU,
+    input  wire       BTNL,
+    input  wire       BTND,
+    input  wire       BTNR,
+    input  wire       BTNC,
+    input  wire [3:0] SW,
+    output wire [7:0] LED,
 
     /*
      * Ethernet: 1000BASE-T RGMII
      */
-    input  wire       phy_rx_clk,
-    input  wire [3:0] phy_rxd,
-    input  wire       phy_rx_ctl,
-    output wire       phy_tx_clk,
-    output wire [3:0] phy_txd,
-    output wire       phy_tx_ctl,
-    output wire       phy_reset_n,
-    input  wire       phy_int_n,
+    input  wire       PHY_RX_CLK,
+    input  wire [3:0] PHY_RXD,
+    input  wire       PHY_RX_CTL,
+    output wire       PHY_TX_CLK,
+    output wire [3:0] PHY_TXD,
+    output wire       PHY_TX_CTL,
+    output wire       PHY_RESET_N,
+    input  wire       PHY_INT_N,
 
     /*
      * UART: 500000 bps, 8N1
      */
-    input  wire       uart_rxd,
-    output wire       uart_txd,
-    output wire       uart_rts,
-    input  wire       uart_cts
+    input  wire       UART_RXD,
+    output wire       UART_TXD,
+    output wire       UART_RTS,
+    input  wire       UART_CTS,
+
+    /*
+     * FMC DAC
+     */
+    output wire       FMC_LPC_LA16_P,
+    output wire       FMC_LPC_LA16_N,
+    output wire       FMC_LPC_LA14_P,
+    output wire       FMC_LPC_LA14_N
 );
 
 // Clock and reset
@@ -86,14 +88,14 @@ wire rst_int;
 wire clk_200mhz_mmcm_out;
 wire clk_200mhz_int;
 
-wire mmcm_rst = reset;
+wire mmcm_rst = RESET;
 wire mmcm_locked;
 wire mmcm_clkfb;
 
 IBUFGDS
 clk_200mhz_ibufgds_inst(
-    .I(clk_200mhz_p),
-    .IB(clk_200mhz_n),
+    .I(CLK_200MHZ_P),
+    .IB(CLK_200MHZ_N),
     .O(clk_200mhz_ibufg)
 );
 
@@ -201,12 +203,12 @@ debounce_switch #(
 debounce_switch_inst (
     .clk(clk_int),
     .rst(rst_int),
-    .in({btnu,
-        btnl,
-        btnd,
-        btnr,
-        btnc,
-        sw}),
+    .in({BTNU,
+        BTNL,
+        BTND,
+        BTNR,
+        BTNC,
+        SW}),
     .out({btnu_int,
         btnl_int,
         btnd_int,
@@ -224,7 +226,7 @@ sync_signal #(
 )
 sync_signal_inst (
     .clk(clk_int),
-    .in({uart_rxd, uart_cts}),
+    .in({UART_RXD, UART_CTS}),
     .out({uart_rxd_int, uart_cts_int})
 );
 
@@ -243,7 +245,7 @@ IDELAYE2 #(
     .IDELAY_TYPE("FIXED")
 )
 phy_rxd_idelay_0 (
-    .IDATAIN(phy_rxd[0]),
+    .IDATAIN(PHY_RXD[0]),
     .DATAOUT(phy_rxd_delay[0]),
     .DATAIN(1'b0),
     .C(1'b0),
@@ -261,7 +263,7 @@ IDELAYE2 #(
     .IDELAY_TYPE("FIXED")
 )
 phy_rxd_idelay_1 (
-    .IDATAIN(phy_rxd[1]),
+    .IDATAIN(PHY_RXD[1]),
     .DATAOUT(phy_rxd_delay[1]),
     .DATAIN(1'b0),
     .C(1'b0),
@@ -279,7 +281,7 @@ IDELAYE2 #(
     .IDELAY_TYPE("FIXED")
 )
 phy_rxd_idelay_2 (
-    .IDATAIN(phy_rxd[2]),
+    .IDATAIN(PHY_RXD[2]),
     .DATAOUT(phy_rxd_delay[2]),
     .DATAIN(1'b0),
     .C(1'b0),
@@ -297,7 +299,7 @@ IDELAYE2 #(
     .IDELAY_TYPE("FIXED")
 )
 phy_rxd_idelay_3 (
-    .IDATAIN(phy_rxd[3]),
+    .IDATAIN(PHY_RXD[3]),
     .DATAOUT(phy_rxd_delay[3]),
     .DATAIN(1'b0),
     .C(1'b0),
@@ -315,7 +317,7 @@ IDELAYE2 #(
     .IDELAY_TYPE("FIXED")
 )
 phy_rx_ctl_idelay (
-    .IDATAIN(phy_rx_ctl),
+    .IDATAIN(PHY_RX_CTL),
     .DATAOUT(phy_rx_ctl_delay),
     .DATAIN(1'b0),
     .C(1'b0),
@@ -329,10 +331,26 @@ phy_rx_ctl_idelay (
     .REGRST(1'b0)
 );
 
-fpga_core #(
+// This system is adapted for streaming I/Q
+// modulation/demodulation experiments with Sivers EVK06002 and UDP host
+// connectivity from a Raspberry Pi.
+wire [7:0] rpi_ingress_tdata;
+wire       rpi_ingress_tvalid;
+wire       rpi_ingress_tready;
+wire       rpi_ingress_tlast;
+wire [7:0] tx_ring_buffer_tdata;
+wire       tx_ring_buffer_tvalid;
+wire       tx_ring_buffer_tready;
+wire       tx_ring_buffer_tlast;
+wire [7:0] rx_ring_buffer_tdata;
+wire       rx_ring_buffer_tvalid;
+wire       rx_ring_buffer_tready;
+wire       rx_ring_buffer_tlast;
+
+ethernet_subsystem #(
     .TARGET("XILINX")
 )
-core_inst (
+ethernet_subsystem (
     /*
      * Clock: 125MHz
      * Synchronous reset
@@ -349,26 +367,84 @@ core_inst (
     .btnr(btnr_int),
     .btnc(btnc_int),
     .sw(sw_int),
-    .led(led),
+    .led(LED),
     /*
      * Ethernet: 1000BASE-T RGMII
      */
-    .phy_rx_clk(phy_rx_clk),
+    .phy_rx_clk(PHY_RX_CLK),
     .phy_rxd(phy_rxd_delay),
     .phy_rx_ctl(phy_rx_ctl_delay),
-    .phy_tx_clk(phy_tx_clk),
-    .phy_txd(phy_txd),
-    .phy_tx_ctl(phy_tx_ctl),
-    .phy_reset_n(phy_reset_n),
-    .phy_int_n(phy_int_n),
+    .phy_tx_clk(PHY_TX_CLK),
+    .phy_txd(PHY_TXD),
+    .phy_tx_ctl(PHY_TX_CTL),
+    .phy_reset_n(PHY_RESET_N),
+    .phy_int_n(PHY_INT_N),
     /*
      * UART: 115200 bps, 8N1
      */
     .uart_rxd(uart_rxd_int),
-    .uart_txd(uart_txd),
-    .uart_rts(uart_rts),
-    .uart_cts(uart_cts_int)
+    .uart_txd(UART_TXD),
+    .uart_rts(UART_RTS),
+    .uart_cts(uart_cts_int),
+
+    .m_axis_rpi_rx_tdata(rpi_ingress_tdata),
+    .m_axis_rpi_rx_tvalid(rpi_ingress_tvalid),
+    .m_axis_rpi_rx_tready(rpi_ingress_tready),
+    .m_axis_rpi_rx_tlast(rpi_ingress_tlast),
+    .s_axis_rpi_tx_tdata(rx_ring_buffer_tdata),
+    .s_axis_rpi_tx_tvalid(rx_ring_buffer_tvalid),
+    .s_axis_rpi_tx_tready(rx_ring_buffer_tready),
+    .s_axis_rpi_tx_tlast(rx_ring_buffer_tlast)
 );
+
+ping_pong_buffer #(
+    .DATA_WIDTH(8),
+    .DEPTH(2048)
+) ping_pong_buffer_tx (
+    .clk(clk_int),
+    .rst(rst_int),
+    .i_s_axis_tdata(rpi_ingress_tdata),
+    .i_s_axis_tvalid(rpi_ingress_tvalid),
+    .o_s_axis_tready(rpi_ingress_tready),
+    .i_s_axis_tlast(rpi_ingress_tlast),
+    .o_m_axis_tdata(tx_ring_buffer_tdata),
+    .o_m_axis_tvalid(tx_ring_buffer_tvalid),
+    .i_m_axis_tready(tx_ring_buffer_tready),
+    .o_m_axis_tlast(tx_ring_buffer_tlast)
+);
+
+ping_pong_buffer #(
+    .DATA_WIDTH(8),
+    .DEPTH(2048)
+) ping_pong_buffer_rx (
+    .clk(clk_int),
+    .rst(rst_int),
+    .i_s_axis_tdata(tx_ring_buffer_tdata),
+    .i_s_axis_tvalid(tx_ring_buffer_tvalid),
+    .o_s_axis_tready(tx_ring_buffer_tready),
+    .i_s_axis_tlast(tx_ring_buffer_tlast),
+    .o_m_axis_tdata(rx_ring_buffer_tdata),
+    .o_m_axis_tvalid(rx_ring_buffer_tvalid),
+    .i_m_axis_tready(rx_ring_buffer_tready),
+    .o_m_axis_tlast(rx_ring_buffer_tlast)
+);
+
+wire tvalid_dummy;
+wire [31:0] tdata_dummy;
+wire tvalid_phase_dummy;
+wire [15:0] tdata_phase_dummy;
+
+//----------- Begin Cut here for INSTANTIATION Template ---// INST_TAG
+ dds_compiler_0 dds_tx_side (
+  .aclk(clk_mmcm_out),                                // input wire aclk
+  .aresetn(rst_int),                          // input wire aresetn
+  .m_axis_data_tvalid(tvalid_dummy),    // output wire m_axis_data_tvalid
+  .m_axis_data_tdata(tdata_dummy),      // output wire [31 : 0] m_axis_data_tdata
+  .m_axis_phase_tvalid(tvalid_phase_dummy),  // output wire m_axis_phase_tvalid
+  .m_axis_phase_tdata(tdata_phase_dummy)    // output wire [15 : 0] m_axis_phase_tdata
+); 
+
+
 
 endmodule
 
