@@ -342,10 +342,20 @@ wire [7:0] tx_ring_buffer_tdata;
 wire       tx_ring_buffer_tvalid;
 wire       tx_ring_buffer_tready;
 wire       tx_ring_buffer_tlast;
+wire [7:0] iq_codec_tdata;
+wire       iq_codec_tvalid;
+wire       iq_codec_tready;
+wire       iq_codec_tlast;
+wire       iq_dac_sample_valid;
+wire [13:0] iq_dac1_h;
+wire [13:0] iq_dac1_l;
+wire [13:0] iq_dac2_h;
+wire [13:0] iq_dac2_l;
 wire [7:0] rx_ring_buffer_tdata;
 wire       rx_ring_buffer_tvalid;
 wire       rx_ring_buffer_tready;
 wire       rx_ring_buffer_tlast;
+
 
 ethernet_subsystem #(
     .TARGET("XILINX")
@@ -419,30 +429,41 @@ ping_pong_buffer #(
 ) ping_pong_buffer_rx (
     .clk(clk_int),
     .rst(rst_int),
-    .i_s_axis_tdata(tx_ring_buffer_tdata),
-    .i_s_axis_tvalid(tx_ring_buffer_tvalid),
-    .o_s_axis_tready(tx_ring_buffer_tready),
-    .i_s_axis_tlast(tx_ring_buffer_tlast),
+    .i_s_axis_tdata(iq_codec_tdata),
+    .i_s_axis_tvalid(iq_codec_tvalid),
+    .o_s_axis_tready(iq_codec_tready),
+    .i_s_axis_tlast(iq_codec_tlast),
     .o_m_axis_tdata(rx_ring_buffer_tdata),
     .o_m_axis_tvalid(rx_ring_buffer_tvalid),
     .i_m_axis_tready(rx_ring_buffer_tready),
     .o_m_axis_tlast(rx_ring_buffer_tlast)
 );
 
-wire tvalid_dummy;
-wire [31:0] tdata_dummy;
-wire tvalid_phase_dummy;
-wire [15:0] tdata_phase_dummy;
-
-//----------- Begin Cut here for INSTANTIATION Template ---// INST_TAG
- dds_compiler_0 dds_tx_side (
-  .aclk(clk_mmcm_out),                                // input wire aclk
-  .aresetn(rst_int),                          // input wire aresetn
-  .m_axis_data_tvalid(tvalid_dummy),    // output wire m_axis_data_tvalid
-  .m_axis_data_tdata(tdata_dummy),      // output wire [31 : 0] m_axis_data_tdata
-  .m_axis_phase_tvalid(tvalid_phase_dummy),  // output wire m_axis_phase_tvalid
-  .m_axis_phase_tdata(tdata_phase_dummy)    // output wire [15 : 0] m_axis_phase_tdata
-); 
+iq_codec_loop iq_codec_loop_inst (
+    .i_clk(clk_int),
+    .i_rst(rst_int),
+    .i_s_axis_tdata(tx_ring_buffer_tdata),
+    .i_s_axis_tvalid(tx_ring_buffer_tvalid),
+    .o_s_axis_tready(tx_ring_buffer_tready),
+    .i_s_axis_tlast(tx_ring_buffer_tlast),
+    .o_m_axis_tdata(iq_codec_tdata),
+    .o_m_axis_tvalid(iq_codec_tvalid),
+    .i_m_axis_tready(iq_codec_tready),
+    .o_m_axis_tlast(iq_codec_tlast),
+    .o_dac_sample_valid(iq_dac_sample_valid),
+    .o_dac1_h(iq_dac1_h),
+    .o_dac1_l(iq_dac1_l),
+    .o_dac2_h(iq_dac2_h),
+    .o_dac2_l(iq_dac2_l),
+    .o_DAC_out_I_p(FMC_LPC_LA16_P),
+    .o_DAC_out_I_n(FMC_LPC_LA16_N),
+    .o_DAC_out_Q_p(FMC_LPC_LA14_P),
+    .o_DAC_out_Q_n(FMC_LPC_LA14_N),
+    .i_ADC_in_I_p(1'b0),
+    .i_ADC_in_I_n(1'b0),
+    .i_ADC_in_Q_p(1'b0),
+    .i_ADC_in_Q_n(1'b0)
+);
 
 
 
