@@ -16,16 +16,7 @@ module iq_codec_loop (
     output wire [13:0] o_dac1_h,
     output wire [13:0] o_dac1_l,
     output wire [13:0] o_dac2_h,
-    output wire [13:0] o_dac2_l,
-
-    output wire o_DAC_out_I_p,
-    output wire o_DAC_out_I_n,
-    output wire o_DAC_out_Q_p,
-    output wire o_DAC_out_Q_n,
-    input  wire i_ADC_in_I_p,
-    input  wire i_ADC_in_I_n,
-    input  wire i_ADC_in_Q_p,
-    input  wire i_ADC_in_Q_n
+    output wire [13:0] o_dac2_l
 );
 
 wire       dds_tvalid;
@@ -64,8 +55,6 @@ wire       carrier_i;
 wire       carrier_q;
 wire       mod_i;
 wire       mod_q;
-wire       dac_i_bit;
-wire       dac_q_bit;
 wire       tx_symbol_valid;
 wire [13:0] dac1_h;
 wire [13:0] dac1_l;
@@ -116,14 +105,6 @@ assign o_dac1_h = dac1_h;
 assign o_dac1_l = dac1_l;
 assign o_dac2_h = dac2_h;
 assign o_dac2_l = dac2_l;
-
-assign dac_i_bit = tx_symbol_valid ? ~tx_i_sample[13] : 1'b0;
-assign dac_q_bit = tx_symbol_valid ? ~tx_q_sample[13] : 1'b0;
-
-assign o_DAC_out_I_p = dac_i_bit;
-assign o_DAC_out_I_n = ~dac_i_bit;
-assign o_DAC_out_Q_p = dac_q_bit;
-assign o_DAC_out_Q_n = ~dac_q_bit;
 
 always @(posedge i_clk) begin
     if (i_rst) begin

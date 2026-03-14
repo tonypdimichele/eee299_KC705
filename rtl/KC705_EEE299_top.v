@@ -65,13 +65,31 @@ module KC705_EEE299_top (
     output wire       UART_RTS,
     input  wire       UART_CTS,
 
-    /*
-     * FMC DAC
-     */
-    output wire       FMC_LPC_LA16_P,
-    output wire       FMC_LPC_LA16_N,
-    output wire       FMC_LPC_LA14_P,
-    output wire       FMC_LPC_LA14_N
+	//spi interface
+	output wire           CLK_SPI_CE,
+	output wire           DAC1_SPI_CE,
+	output wire           DAC2_SPI_CE,
+	output wire           SPI_SCLK,
+	inout wire            SPI_SDIO,
+	input wire            SPI_SDO,
+
+	//dac input clock from ad9518
+	input wire		      DAC1_DCO_P,
+	input wire   		  DAC1_DCO_N,
+	input wire		      DAC2_DCO_P,
+	input wire   		  DAC2_DCO_N,
+	//dac1 signals
+	output wire            DAC1_DCI_P,	//dac output clock p
+	output wire            DAC1_DCI_N,	//dac output clock n
+	output wire[13:0]      DAC1_DATA_P, //dac output data p
+	output wire[13:0]      DAC1_DATA_N, //dac output data n
+	//dac2 signals
+	output wire            DAC2_DCI_P,	//dac output clock p
+	output wire            DAC2_DCI_N,  //dac output clock n
+	output wire[13:0]      DAC2_DATA_P, //dac output data p
+	output wire[13:0]      DAC2_DATA_N  //dac output data n
+
+
 );
 
 // Clock and reset
@@ -85,7 +103,7 @@ wire clk90_mmcm_out;
 wire clk90_int;
 wire rst_int;
 
-wire clk_200mhz_mmcm_out;
+wire clk_200mhz_mmcm_out, clk_50mhz_mmcm_out, clk_spi;
 wire clk_200mhz_int;
 
 wire mmcm_rst = RESET;
@@ -119,7 +137,7 @@ MMCME2_BASE #(
     .CLKOUT2_DIVIDE(5),
     .CLKOUT2_DUTY_CYCLE(0.5),
     .CLKOUT2_PHASE(0),
-    .CLKOUT3_DIVIDE(1),
+    .CLKOUT3_DIVIDE(20),
     .CLKOUT3_DUTY_CYCLE(0.5),
     .CLKOUT3_PHASE(0),
     .CLKOUT4_DIVIDE(1),
@@ -150,7 +168,7 @@ clk_mmcm_inst (
     .CLKOUT1B(),
     .CLKOUT2(clk_200mhz_mmcm_out),
     .CLKOUT2B(),
-    .CLKOUT3(),
+    .CLKOUT3(clk_50mhz_mmcm_out),
     .CLKOUT3B(),
     .CLKOUT4(),
     .CLKOUT5(),
@@ -176,6 +194,12 @@ BUFG
 clk_200mhz_bufg_inst (
     .I(clk_200mhz_mmcm_out),
     .O(clk_200mhz_int)
+);
+
+BUFG
+clk_50mhz_bufg_inst (
+    .I(clk_50mhz_mmcm_out),
+    .O(clk_spi)
 );
 
 sync_reset #(
@@ -351,6 +375,12 @@ wire [13:0] iq_dac1_h;
 wire [13:0] iq_dac1_l;
 wire [13:0] iq_dac2_h;
 wire [13:0] iq_dac2_l;
+wire [13:0] dac1_h;
+wire [13:0] dac1_l;
+wire [13:0] dac2_h;
+wire [13:0] dac2_l;
+wire       dac1_dco_buf;
+wire       dac2_dco_buf;
 wire [7:0] rx_ring_buffer_tdata;
 wire       rx_ring_buffer_tvalid;
 wire       rx_ring_buffer_tready;
@@ -454,18 +484,50 @@ iq_codec_loop iq_codec_loop_inst (
     .o_dac1_h(iq_dac1_h),
     .o_dac1_l(iq_dac1_l),
     .o_dac2_h(iq_dac2_h),
-    .o_dac2_l(iq_dac2_l),
-    .o_DAC_out_I_p(FMC_LPC_LA16_P),
-    .o_DAC_out_I_n(FMC_LPC_LA16_N),
-    .o_DAC_out_Q_p(FMC_LPC_LA14_P),
-    .o_DAC_out_Q_n(FMC_LPC_LA14_N),
-    .i_ADC_in_I_p(1'b0),
-    .i_ADC_in_I_n(1'b0),
-    .i_ADC_in_Q_p(1'b0),
-    .i_ADC_in_Q_n(1'b0)
+    .o_dac2_l(iq_dac2_l)
 );
 
+assign dac1_h = iq_dac1_h;
+assign dac1_l = iq_dac1_l;
+assign dac2_h = iq_dac2_h;
+assign dac2_l = iq_dac2_l;
 
+dac_iobuf dac_iobuf_inst
+	(
+	 .dac1_dco_p	(DAC1_DCO_P),
+	 .dac1_dco_n	(DAC1_DCO_N),
+	 .dac2_dco_p	(DAC2_DCO_P),
+	 .dac2_dco_n	(DAC2_DCO_N),
+	 .dac1_dci_p	(DAC1_DCI_P),	
+	 .dac1_dci_n	(DAC1_DCI_N),	
+	 .dac1_data_p	(DAC1_DATA_P), 
+	 .dac1_data_n	(DAC1_DATA_N), 
+	 .dac2_dci_p	(DAC2_DCI_P),	
+	 .dac2_dci_n	(DAC2_DCI_N),  
+	 .dac2_data_p	(DAC2_DATA_P), 
+	 .dac2_data_n	(DAC2_DATA_N), 
+	 .dac1_h 		(dac1_h),  
+	 .dac1_l 		(dac1_l),  
+	 .dac2_h 		(dac2_h),  
+	 .dac2_l 		(dac2_l),  
+	 .dac1_dco_buf 	(dac1_dco_buf),  
+	 .dac2_dco_buf 	(dac2_dco_buf)  
+    );
+
+    dac_config#
+(
+	.DAC1_DELAY(5'd20), //0-31
+	.DAC2_DELAY(5'd10)  //0-31
+)	dac_config_inst(
+	.rst			   (~mmcm_locked),
+	.clk			   (clk_spi),
+	.clk_spi_ce		   (CLK_SPI_CE),
+	.dac1_spi_ce	   (DAC1_SPI_CE),
+	.dac2_spi_ce	   (DAC2_SPI_CE),
+	.spi_sclk		   (SPI_SCLK),
+	.spi_sdio		   (SPI_SDIO),
+	.spi_sdo           (SPI_SDO)
+    );
 
 endmodule
 
