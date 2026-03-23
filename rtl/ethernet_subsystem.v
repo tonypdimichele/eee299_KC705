@@ -82,6 +82,17 @@ module ethernet_subsystem #
     output wire       uart_rts,
     input  wire       uart_cts,
 
+    output wire       reg_tone_mode,
+    output wire [15:0] o_reg_tone_pinc,
+    output wire [4:0] reg_dac1_delay,
+    output wire [4:0] reg_dac2_delay,
+    output wire       reg_dac_delay_apply_toggle,
+    output wire [7:0] reg_dac_spi_read_addr,
+    output wire       reg_dac_spi_read_toggle,
+    input  wire [7:0] dac_spi_read_data,
+    input  wire       dac_spi_read_busy,
+    input  wire       dac_spi_read_done_toggle,
+
     /*
      * External AXIS stream interface
      *   m_axis_rpi_rx_* : UDP/20000 payload out of subsystem (RPi -> fabric)
@@ -630,7 +641,17 @@ axi_lite_regs u_regs (
     .s_axi_rvalid (rb_RVALID[0]),
     .s_axi_rready (rb_RREADY[0]),
 
-    .reg3_out(regs_led)
+    .reg3_out(regs_led),
+    .reg_tone_pinc(o_reg_tone_pinc),
+    .tone_mode_out(reg_tone_mode),
+    .dac1_delay_out(reg_dac1_delay),
+    .dac2_delay_out(reg_dac2_delay),
+    .dac_delay_apply_toggle_out(reg_dac_delay_apply_toggle),
+    .dac_spi_read_addr_out(reg_dac_spi_read_addr),
+    .dac_spi_read_toggle_out(reg_dac_spi_read_toggle),
+    .dac_spi_read_data_in(dac_spi_read_data),
+    .dac_spi_read_busy_in(dac_spi_read_busy),
+    .dac_spi_read_done_toggle_in(dac_spi_read_done_toggle)
 );
 
 // -----------------------------------------------------------------------------

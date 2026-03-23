@@ -47,7 +47,10 @@ module spi_config_ctrl
 	output             	spi_ce,
 	output             	spi_sclk,
 	inout               spi_sdio,
-	input               spi_sdo
+	input               spi_sdo,
+	output              spi_sdio_i_dbg,
+	output              spi_sdio_o_dbg,
+	output              spi_sdio_t_dbg
 	
 	
 );
@@ -86,6 +89,9 @@ IOBUF IOBUF_inst
 
 
 assign spi_in = three_wire?spi_tri_in:spi_sdo ;
+assign spi_sdio_i_dbg = spi_tri_in;
+assign spi_sdio_o_dbg = spi_out;
+assign spi_sdio_t_dbg = spi_dir;
 
 
 always@(posedge clk or posedge rst)

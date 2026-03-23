@@ -103,12 +103,18 @@ wire clk90_mmcm_out;
 wire clk90_int;
 wire rst_int;
 
-wire clk_200mhz_mmcm_out, clk_50mhz_mmcm_out, clk_spi;
+wire clk_200mhz_mmcm_out, clk_50mhz_mmcm_out, clk_250mhz_mmcm_out, clk_500mhz_mmcm_out, clk_spi;
 wire clk_200mhz_int;
+wire clk_250mhz_int;
+wire clk_500mhz_int;
 
 wire mmcm_rst = RESET;
 wire mmcm_locked;
 wire mmcm_clkfb;
+localparam [31:0] DAC_CFG_DELAY_CYCLES = 32'd400000000; // 8 s at 50 MHz
+localparam DEBUG_SKIP_DAC_SPI_RECONFIG = 1'b0;
+reg [31:0] dac_cfg_delay_cnt;
+reg delay_done;
 
 IBUFGDS
 clk_200mhz_ibufgds_inst(
@@ -137,13 +143,13 @@ MMCME2_BASE #(
     .CLKOUT2_DIVIDE(5),
     .CLKOUT2_DUTY_CYCLE(0.5),
     .CLKOUT2_PHASE(0),
-    .CLKOUT3_DIVIDE(20),
+    .CLKOUT3_DIVIDE(4),
     .CLKOUT3_DUTY_CYCLE(0.5),
     .CLKOUT3_PHASE(0),
-    .CLKOUT4_DIVIDE(1),
+    .CLKOUT4_DIVIDE(4),
     .CLKOUT4_DUTY_CYCLE(0.5),
     .CLKOUT4_PHASE(0),
-    .CLKOUT5_DIVIDE(1),
+    .CLKOUT5_DIVIDE(2),
     .CLKOUT5_DUTY_CYCLE(0.5),
     .CLKOUT5_PHASE(0),
     .CLKOUT6_DIVIDE(1),
@@ -170,8 +176,8 @@ clk_mmcm_inst (
     .CLKOUT2B(),
     .CLKOUT3(clk_50mhz_mmcm_out),
     .CLKOUT3B(),
-    .CLKOUT4(),
-    .CLKOUT5(),
+    .CLKOUT4(clk_250mhz_mmcm_out),
+    .CLKOUT5(clk_500mhz_mmcm_out),
     .CLKOUT6(),
     .CLKFBOUT(mmcm_clkfb),
     .CLKFBOUTB(),
@@ -201,6 +207,31 @@ clk_50mhz_bufg_inst (
     .I(clk_50mhz_mmcm_out),
     .O(clk_spi)
 );
+
+BUFG
+clk_250mhz_bufg_inst (
+    .I(clk_250mhz_mmcm_out),
+    .O(clk_250mhz_int)
+);
+
+BUFG
+clk_500mhz_bufg_inst (
+    .I(clk_500mhz_mmcm_out),
+    .O(clk_500mhz_int)
+);
+
+always @(posedge clk_spi) begin
+    if (!mmcm_locked) begin
+        dac_cfg_delay_cnt <= 32'd0;
+        delay_done <= 1'b0;
+    end else if (!delay_done) begin
+        if (dac_cfg_delay_cnt >= DAC_CFG_DELAY_CYCLES-1) begin
+            delay_done <= 1'b1;
+        end else begin
+            dac_cfg_delay_cnt <= dac_cfg_delay_cnt + 1'b1;
+        end
+    end
+end
 
 sync_reset #(
     .N(4)
@@ -381,11 +412,35 @@ wire [13:0] dac2_h;
 wire [13:0] dac2_l;
 wire       dac1_dco_buf;
 wire       dac2_dco_buf;
+wire       dac_tone_mode;
+wire [15:0] tone_pinc;
+wire [4:0] dac1_delay_reg;
+wire [4:0] dac2_delay_reg;
+wire       dac_delay_apply_toggle_reg;
+wire [7:0] dac_spi_read_addr_reg;
+wire       dac_spi_read_toggle_reg;
+wire [11:0] dac_ctrl_sync;
+wire [4:0] dac1_delay_spi;
+wire [4:0] dac2_delay_spi;
+wire       dac_delay_apply_toggle_spi;
+reg        dac_delay_apply_toggle_spi_d;
+wire       dac_delay_apply_pulse_spi;
+wire [8:0] dac_spi_read_ctrl_sync;
+wire [7:0] dac_spi_read_addr_spi;
+wire       dac_spi_read_toggle_spi;
+reg        dac_spi_read_toggle_spi_d;
+wire       dac_spi_read_pulse_spi;
+wire [7:0] dac_spi_read_data_spi;
+wire       dac_spi_read_done_toggle_spi;
+wire       dac_spi_read_busy_spi;
+wire [9:0] dac_spi_read_status_sync;
+wire [7:0] dac_spi_read_data_reg;
+wire       dac_spi_read_done_toggle_reg;
+wire       dac_spi_read_busy_reg;
 wire [7:0] rx_ring_buffer_tdata;
 wire       rx_ring_buffer_tvalid;
 wire       rx_ring_buffer_tready;
 wire       rx_ring_buffer_tlast;
-
 
 ethernet_subsystem #(
     .TARGET("XILINX")
@@ -426,6 +481,16 @@ ethernet_subsystem (
     .uart_txd(UART_TXD),
     .uart_rts(UART_RTS),
     .uart_cts(uart_cts_int),
+    .reg_tone_mode(dac_tone_mode),
+    .o_reg_tone_pinc(tone_pinc),
+    .reg_dac1_delay(dac1_delay_reg),
+    .reg_dac2_delay(dac2_delay_reg),
+    .reg_dac_delay_apply_toggle(dac_delay_apply_toggle_reg),
+    .reg_dac_spi_read_addr(dac_spi_read_addr_reg),
+    .reg_dac_spi_read_toggle(dac_spi_read_toggle_reg),
+    .dac_spi_read_data(dac_spi_read_data_reg),
+    .dac_spi_read_busy(dac_spi_read_busy_reg),
+    .dac_spi_read_done_toggle(dac_spi_read_done_toggle_reg),
 
     .m_axis_rpi_rx_tdata(rpi_ingress_tdata),
     .m_axis_rpi_rx_tvalid(rpi_ingress_tvalid),
@@ -472,6 +537,10 @@ ping_pong_buffer #(
 iq_codec_loop iq_codec_loop_inst (
     .i_clk(clk_int),
     .i_rst(rst_int),
+    .i_dac1_clk(dac1_dco_buf),
+    .i_dac2_clk(dac2_dco_buf),
+    .i_tone_mode(dac_tone_mode),
+    .i_tone_pinc(tone_pinc),
     .i_s_axis_tdata(tx_ring_buffer_tdata),
     .i_s_axis_tvalid(tx_ring_buffer_tvalid),
     .o_s_axis_tready(tx_ring_buffer_tready),
@@ -486,11 +555,89 @@ iq_codec_loop iq_codec_loop_inst (
     .o_dac2_h(iq_dac2_h),
     .o_dac2_l(iq_dac2_l)
 );
+(* mark_debug = "true"*)
+reg helpme;
+always @(posedge dac1_dco_buf) begin
+    helpme <= clk_50mhz_mmcm_out;
+end
+
+(* mark_debug = "true" *) reg [13:0] dac1_h_dbg_250;
+(* mark_debug = "true" *) reg [13:0] dac1_l_dbg_250;
+(* mark_debug = "true" *) reg        dac_tone_mode_dbg_250;
+always @(posedge clk_250mhz_int) begin
+    dac1_h_dbg_250 <= dac1_h;
+    dac1_l_dbg_250 <= dac1_l;
+    dac_tone_mode_dbg_250 <= dac_tone_mode;
+end
+
+(* mark_debug = "true" *) reg [13:0] dac1_h_dbg_500;
+(* mark_debug = "true" *) reg [13:0] dac1_l_dbg_500;
+(* mark_debug = "true" *) reg        dac_tone_mode_dbg_500;
+always @(posedge clk_500mhz_int) begin
+    dac1_h_dbg_500 <= dac1_h;
+    dac1_l_dbg_500 <= dac1_l;
+    dac_tone_mode_dbg_500 <= dac_tone_mode;
+end
 
 assign dac1_h = iq_dac1_h;
 assign dac1_l = iq_dac1_l;
 assign dac2_h = iq_dac2_h;
 assign dac2_l = iq_dac2_l;
+
+sync_signal #(
+    .WIDTH(12),
+    .N(2)
+)
+dac_ctrl_sync_inst (
+    .clk(clk_spi),
+    .in({dac_delay_apply_toggle_reg, dac2_delay_reg, dac1_delay_reg, 1'b0}),
+    .out(dac_ctrl_sync)
+);
+
+assign dac_delay_apply_toggle_spi = dac_ctrl_sync[11];
+assign dac2_delay_spi = dac_ctrl_sync[10:6];
+assign dac1_delay_spi = dac_ctrl_sync[5:1];
+assign dac_delay_apply_pulse_spi = dac_delay_apply_toggle_spi ^ dac_delay_apply_toggle_spi_d;
+
+sync_signal #(
+    .WIDTH(9),
+    .N(2)
+)
+dac_spi_read_ctrl_sync_inst (
+    .clk(clk_spi),
+    .in({dac_spi_read_toggle_reg, dac_spi_read_addr_reg}),
+    .out(dac_spi_read_ctrl_sync)
+);
+
+assign dac_spi_read_toggle_spi = dac_spi_read_ctrl_sync[8];
+assign dac_spi_read_addr_spi = dac_spi_read_ctrl_sync[7:0];
+assign dac_spi_read_pulse_spi = dac_spi_read_toggle_spi ^ dac_spi_read_toggle_spi_d;
+
+sync_signal #(
+    .WIDTH(10),
+    .N(2)
+)
+dac_spi_read_status_sync_inst (
+    .clk(clk_int),
+    .in({dac_spi_read_busy_spi, dac_spi_read_done_toggle_spi, dac_spi_read_data_spi}),
+    .out(dac_spi_read_status_sync)
+);
+
+assign dac_spi_read_busy_reg = dac_spi_read_status_sync[9];
+assign dac_spi_read_done_toggle_reg = dac_spi_read_status_sync[8];
+assign dac_spi_read_data_reg = dac_spi_read_status_sync[7:0];
+
+wire dac_cfg_rst = DEBUG_SKIP_DAC_SPI_RECONFIG ? 1'b1 : (~mmcm_locked || ~delay_done);
+
+always @(posedge clk_spi) begin
+    if (~mmcm_locked || ~delay_done) begin
+        dac_delay_apply_toggle_spi_d <= 1'b0;
+        dac_spi_read_toggle_spi_d <= 1'b0;
+    end else begin
+        dac_delay_apply_toggle_spi_d <= dac_delay_apply_toggle_spi;
+        dac_spi_read_toggle_spi_d <= dac_spi_read_toggle_spi;
+    end
+end
 
 dac_iobuf dac_iobuf_inst
 	(
@@ -514,13 +661,17 @@ dac_iobuf dac_iobuf_inst
 	 .dac2_dco_buf 	(dac2_dco_buf)  
     );
 
-    dac_config#
-(
-	.DAC1_DELAY(5'd20), //0-31
-	.DAC2_DELAY(5'd10)  //0-31
-)	dac_config_inst(
-	.rst			   (~mmcm_locked),
+dac_config dac_config_inst(
+	.rst			   (dac_cfg_rst),
 	.clk			   (clk_spi),
+    .i_dac1_delay       (dac1_delay_spi),
+    .i_dac2_delay       (dac2_delay_spi),
+    .i_apply            (dac_delay_apply_pulse_spi),
+    .i_manual_read_addr (dac_spi_read_addr_spi),
+    .i_manual_read      (dac_spi_read_pulse_spi),
+    .o_manual_read_data (dac_spi_read_data_spi),
+    .o_manual_read_done_toggle(dac_spi_read_done_toggle_spi),
+    .o_manual_read_busy (dac_spi_read_busy_spi),
 	.clk_spi_ce		   (CLK_SPI_CE),
 	.dac1_spi_ce	   (DAC1_SPI_CE),
 	.dac2_spi_ce	   (DAC2_SPI_CE),

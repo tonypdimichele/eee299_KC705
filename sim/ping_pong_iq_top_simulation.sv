@@ -56,6 +56,9 @@ module ping_pong_iq_top_simulation;
     iq_codec_loop dut_iq_codec (
         .i_clk(clk),
         .i_rst(rst),
+        .i_dac1_clk(clk),
+        .i_dac2_clk(clk),
+        .i_tone_mode(1'b0),
         .i_s_axis_tdata(tx_ring_buffer_tdata),
         .i_s_axis_tvalid(tx_ring_buffer_tvalid),
         .o_s_axis_tready(tx_ring_buffer_tready),

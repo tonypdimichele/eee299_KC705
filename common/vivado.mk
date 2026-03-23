@@ -124,7 +124,7 @@ $(PROJECT).runs/impl_1/$(PROJECT)_routed.dcp: $(PROJECT).runs/synth_1/$(PROJECT)
 $(PROJECT).bit $(PROJECT).ltx: $(PROJECT).runs/impl_1/$(PROJECT)_routed.dcp
 	echo "open_project $(PROJECT).xpr" > generate_bit.tcl
 	echo "open_run impl_1" >> generate_bit.tcl
-	echo "write_bitstream -force $(PROJECT).runs/impl_1/$(PROJECT).bit" >> generate_bit.tcl
+	echo "write_bitstream -force -bin $(PROJECT).runs/impl_1/$(PROJECT).bit" >> generate_bit.tcl
 	echo "write_debug_probes -force $(PROJECT).runs/impl_1/$(PROJECT).ltx" >> generate_bit.tcl
 	vivado -nojournal -nolog -mode batch -source generate_bit.tcl
 	ln -f -s $(PROJECT).runs/impl_1/$(PROJECT).bit .
