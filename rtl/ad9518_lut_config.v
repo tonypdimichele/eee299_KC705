@@ -73,7 +73,7 @@ begin
 		10'd  30: lut_data <= {16'h0196 , 8'h44};   //divider 2: low cycle [7:4]+1  high cycle [3:0]+1  divider output = diviver input/([7:4]+1+[3:0]+1)
 		10'd  31: lut_data <= {16'h0197 , 8'h80};   //divider 2
 		10'd  32: lut_data <= {16'h0198 , 8'h00};   //divider 2
-		10'd  33: lut_data <= {16'h01E0 , 8'h00};	//VCO divider [2:0]
+		10'd  33: lut_data <= {16'h01E0 , 8'h04};	//VCO divider [2:0]
 		10'd  34: lut_data <= {16'h01E1 , 8'h02};	//Input clock select vco or clk
 		10'd  35: lut_data <= {16'h0018 , 8'h07}; 	//PLL control 3 [0]:VCO cal now
 		10'd  36: lut_data <= {16'h0232 , 8'h01};	//[0] update all register(self clearing)	

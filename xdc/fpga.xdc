@@ -15,6 +15,7 @@ set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 set_property -dict {LOC AD12 IOSTANDARD LVDS} [get_ports CLK_200MHZ_P]
 set_property -dict {LOC AD11 IOSTANDARD LVDS} [get_ports CLK_200MHZ_N]
 create_clock -period 5.000 -name clk_200mhz [get_ports CLK_200MHZ_P]
+create_clock -period 4.000 -name dac1_dco_clk
 
 # LEDs
 set_property -dict {LOC AB8 IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 12} [get_ports {LED[0]}]

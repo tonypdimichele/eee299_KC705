@@ -70,6 +70,9 @@ end
 assign tone_aresetn = dac1_rst_sync2;
 
 // PINC FFs on posedge to match DDS s_axis_phase_tdata posedge capture.
+logic [1:0] dac_counter;
+logic dac_quarter_clock;
+logic dac_quarter_clock_bufg;
 always @(posedge i_dac1_clk) begin
     if (!tone_aresetn) begin
         tone_pinc_dac1_ff1 <= 16'd1311;
@@ -77,12 +80,22 @@ always @(posedge i_dac1_clk) begin
     end else begin
         tone_pinc_dac1_ff1 <= i_tone_pinc;
         tone_pinc_dac1_ff2 <= tone_pinc_dac1_ff1;
+        dac_counter <= dac_counter + 1'b1;
+    end
+
+    if (dac_counter == 2'b0) begin
+        dac_quarter_clock <= ~dac_quarter_clock;
     end
 end
 
+BUFG BUFG1_inst (
+   .O(dac_quarter_clock_bufg), // 1-bit output: Clock output
+   .I(dac_quarter_clock)  // 1-bit input: Clock input
+);
+
 // Dedicated DDS for tone mode, clocked in DAC domain to avoid LUT truncation artifacts.
 dds_compiler_0 dds_tone_core (
-    .aclk(i_clk),
+    .aclk(i_dac1_clk), 
     .aresetn(tone_aresetn),
     .s_axis_phase_tvalid(tone_aresetn),
     .s_axis_phase_tdata(tone_pinc_dac1_stable),
@@ -155,8 +168,8 @@ assign mod_q = symbol_q ^ carrier_q;
 assign tx_symbol_valid = mod_busy_reg && dds_tvalid;
 
 assign tone_mode_dac1 = tone_mode_dac1_ff2;
-assign tone_dds_i_s16 = tone_dds_tdata[15:0];
-assign tone_dds_q_s16 = tone_dds_tdata[31:16];
+assign tone_dds_i_s16 = tone_dds_tdata[31:16];
+assign tone_dds_q_s16 = tone_dds_tdata[15:0];
 assign tone_dac1_h = tone_dds_i_s16[13:0];
 assign tone_dac1_l = tone_dds_q_s16[13:0];
 assign tone_dac2_h = tone_dds_q_s16[15:2];

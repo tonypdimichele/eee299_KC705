@@ -76,7 +76,7 @@ module axi_lite_regs #
             reg0 <= 0;
             reg1 <= 0;
             reg3 <= 0;
-            reg4_ctrl <= 32'h0000_A140;
+            reg4_ctrl <= 32'h0001_2121;
             reg_tone_pinc32<=32'h0000_0400;
             reg6_spi_read_ctrl <= 32'd0;
         end
@@ -162,9 +162,9 @@ module axi_lite_regs #
         if (!s_axi_aresetn) begin
             reg2_counter<=0;
             reg3_out<=8'h00;
-            tone_mode_out<=1'b0;
-            dac1_delay_out<=5'd20;
-            dac2_delay_out<=5'd10;
+            tone_mode_out<=1'b1;
+            dac1_delay_out<=5'd18;
+            dac2_delay_out<=5'd18;
             dac_delay_apply_toggle_out<=1'b0;
             dac_spi_read_addr_out<=8'h00;
             dac_spi_read_toggle_out<=1'b0;
