@@ -87,7 +87,9 @@ module KC705_EEE299_top (
 	output wire            DAC2_DCI_P,	//dac output clock p
 	output wire            DAC2_DCI_N,  //dac output clock n
 	output wire[13:0]      DAC2_DATA_P, //dac output data p
-	output wire[13:0]      DAC2_DATA_N  //dac output data n
+	output wire[13:0]      DAC2_DATA_N,  //dac output data n
+
+    output wire            USER_SMA_GPIO_P
 
 
 );
@@ -149,7 +151,7 @@ MMCME2_BASE #(
     .CLKOUT4_DIVIDE(4),
     .CLKOUT4_DUTY_CYCLE(0.5),
     .CLKOUT4_PHASE(0),
-    .CLKOUT5_DIVIDE(2),
+    .CLKOUT5_DIVIDE(3),
     .CLKOUT5_DUTY_CYCLE(0.5),
     .CLKOUT5_PHASE(0),
     .CLKOUT6_DIVIDE(1),
@@ -413,7 +415,7 @@ wire [13:0] dac2_l;
 wire       dac1_dco_buf;
 wire       dac2_dco_buf;
 wire       dac_tone_mode;
-wire [15:0] tone_pinc;
+wire [31:0] tone_pinc;
 wire [4:0] dac1_delay_reg;
 wire [4:0] dac2_delay_reg;
 wire       dac_delay_apply_toggle_reg;
@@ -557,9 +559,7 @@ iq_codec_loop iq_codec_loop_inst (
 );
 (* mark_debug = "true"*)
 reg helpme;
-always @(posedge dac1_dco_buf) begin
-    helpme <= clk_50mhz_mmcm_out;
-end
+
 
 (* mark_debug = "true" *) reg [13:0] dac1_h_dbg_250;
 (* mark_debug = "true" *) reg [13:0] dac1_l_dbg_250;
@@ -680,6 +680,21 @@ dac_config dac_config_inst(
 	.spi_sdo           (SPI_SDO)
     );
 
+
+reg [7:0] dac1_clk_divide;
+always @(posedge dac1_dco_buf) begin
+    dac1_clk_divide <= dac1_clk_divide + 1'b1;
+    if (dac1_clk_divide == 8'd99) begin
+        helpme <= ~helpme;
+        dac1_clk_divide <= 8'd0;
+    end
+end
+
+assign USER_SMA_GPIO_P = helpme;
+
+
 endmodule
+
+
 
 `resetall

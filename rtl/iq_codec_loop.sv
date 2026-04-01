@@ -4,8 +4,8 @@ module iq_codec_loop (
     input  wire       i_dac1_clk,
     input  wire       i_dac2_clk,
     input  wire       i_tone_mode,
-    input  wire [15:0] i_tone_pinc,
-
+    input  wire [31:0] i_tone_pinc,
+(*mark_debug = "true"*)
     input  wire [7:0] i_s_axis_tdata,
     input  wire       i_s_axis_tvalid,
     output wire       o_s_axis_tready,
@@ -36,26 +36,142 @@ wire [31:0] tone_dds_tdata;
 reg         tone_mode_dac1_ff1;
 reg         tone_mode_dac1_ff2;
 // PINC FFs are posedge so they feed the posedge-sampled DDS s_axis_phase_tdata with full-cycle setup.
-reg [15:0]  tone_pinc_dac1_ff1;
-reg [15:0]  tone_pinc_dac1_ff2;
+reg [31:0]  tone_pinc_dac1_ff1;
+reg [31:0]  tone_pinc_dac1_ff2;
 reg [15:0]  tone_pinc_dac1_stable;
 // Reset synchronizer: bring i_rst (125 MHz domain) safely into i_dac1_clk (500 MHz) domain.
 reg         dac1_rst_sync1;
 reg         dac1_rst_sync2;
 wire        tone_aresetn;
 wire        tone_mode_dac1;
-
-// DDS runs continuously and provides SIN/COS samples used as a reversible byte mask.
-dds_compiler_0 dds_iq_core (
-    .aclk(i_clk),
-    .aresetn(~i_rst),
-    .s_axis_phase_tvalid(1'b1),
-    .s_axis_phase_tdata(IQ_DDS_PINC),
-    .m_axis_data_tvalid(dds_tvalid), // output wire m_axis_data_tvalid
-    .m_axis_data_tdata(dds_tdata), // output wire [31 : 0] m_axis_data_tdata
-    .m_axis_phase_tvalid(dds_phase_tvalid), // output wire m_axis_phase_tvalid
-    .m_axis_phase_tdata(dds_phase_tdata) // output wire [15 : 0] m_axis_phase_tdata
+(*mark_debug = "true"*)
+wire [15:0] eth_data_dac1;
+(*mark_debug = "true"*)
+wire eth_data_valid;
+afifo_wrapper afifo_wrapper_data_iq (
+    .i_r_clk(i_dac1_clk),
+    .i_w_clk(i_clk),
+    .i_w_rst(i_rst),
+    .i_w_data(i_s_axis_tdata),
+    .o_r_data(eth_data_dac1),
+    .o_data_valid(eth_data_valid)
 );
+logic [7:0] I_unsigned;
+logic [7:0] Q_unsigned;
+logic signed [7:0] I_signed;
+logic signed [7:0] Q_signed;
+logic signed [15:0] I_filtered;
+logic signed [15:0] Q_filtered;
+logic signed [13:0] I_dac_s14;
+logic signed [13:0] Q_dac_s14;
+logic       iq_in_valid;
+logic       iq_out_valid;
+logic [15:0] iq_word_hold;
+logic [6:0]  iq_bit_phase;
+logic        iq_word_loaded;
+logic [2:0]  iq_bit_idx;
+logic        bpsk_i_bit;
+logic        bpsk_q_bit;
+localparam logic signed [7:0] BIT_LEVEL_POS = 8'sd127;
+localparam logic signed [7:0] BIT_LEVEL_NEG = -8'sd128;
+wire                       iq_symbol_strobe;
+wire                       dds_iq_tvalid;
+wire [31:0]                dds_iq_tdata;
+wire signed [15:0]         dds_iq_i_s16;
+wire signed [15:0]         dds_iq_q_s16;
+wire signed [15:0]         bpsk_i_s16;
+wire signed [15:0]         bpsk_q_s16;
+wire signed [13:0]         bpsk_i_s14;
+wire signed [13:0]         bpsk_q_s14;
+
+assign iq_bit_idx = iq_bit_phase[6:4];
+assign iq_symbol_strobe = (iq_bit_phase[3:0] == 4'd0);
+
+always_ff @(posedge i_dac1_clk) begin
+    if (!tone_aresetn) begin
+        iq_word_hold <= 16'd0;
+        iq_bit_phase <= 7'd0;
+        iq_word_loaded <= 1'b0;
+        bpsk_i_bit <= 1'b0;
+        bpsk_q_bit <= 1'b0;
+        I_unsigned <= 8'd0;
+        Q_unsigned <= 8'd0;
+        I_signed <= 8'd0;
+        Q_signed <= 8'd0;
+        iq_in_valid <= 1'b0;
+    end else if (eth_data_valid) begin
+        iq_word_hold <= eth_data_dac1;
+        iq_bit_phase <= 7'd0;
+        iq_word_loaded <= 1'b1;
+        bpsk_i_bit <= eth_data_dac1[7];
+        bpsk_q_bit <= eth_data_dac1[15];
+        I_unsigned <= {8{eth_data_dac1[7]}};
+        Q_unsigned <= {8{eth_data_dac1[15]}};
+        I_signed <= eth_data_dac1[7] ? BIT_LEVEL_POS : BIT_LEVEL_NEG;
+        Q_signed <= eth_data_dac1[15] ? BIT_LEVEL_POS : BIT_LEVEL_NEG;
+        iq_in_valid <= 1'b1;
+    end else begin
+        if (iq_word_loaded) begin
+            iq_bit_phase <= iq_bit_phase + 1'b1;
+            if (iq_bit_phase == 7'd127) begin
+                iq_word_loaded <= 1'b0;
+            end
+            if (iq_symbol_strobe) begin
+                bpsk_i_bit <= iq_word_hold[7 - iq_bit_idx];
+                bpsk_q_bit <= iq_word_hold[15 - iq_bit_idx];
+                I_unsigned <= {8{iq_word_hold[7 - iq_bit_idx]}};
+                Q_unsigned <= {8{iq_word_hold[15 - iq_bit_idx]}};
+                I_signed <= iq_word_hold[7 - iq_bit_idx] ? BIT_LEVEL_POS : BIT_LEVEL_NEG;
+                Q_signed <= iq_word_hold[15 - iq_bit_idx] ? BIT_LEVEL_POS : BIT_LEVEL_NEG;
+            end else begin
+                I_unsigned <= 8'd0;
+                Q_unsigned <= 8'd0;
+                I_signed <= 8'sd0;
+                Q_signed <= 8'sd0;
+            end
+            iq_in_valid <= 1'b1;
+        end else begin
+            I_unsigned <= 8'd0;
+            Q_unsigned <= 8'd0;
+            I_signed <= 8'sd0;
+            Q_signed <= 8'sd0;
+            iq_in_valid <= 1'b1;
+        end
+    end
+end
+
+// Dedicated DDS for tone mode, clocked in DAC domain to avoid LUT truncation artifacts.
+dds_compiler_0 dds_iq_core (
+    .aclk(i_dac1_clk), 
+    .aresetn(tone_aresetn),
+    .s_axis_phase_tvalid(tone_aresetn),
+    .s_axis_phase_tdata(tone_pinc_dac1_stable),
+    .m_axis_data_tvalid(dds_iq_tvalid),
+    .m_axis_data_tdata(dds_iq_tdata),
+    .m_axis_phase_tvalid(),  // unused
+    .m_axis_phase_tdata()    // unused
+);
+
+function automatic logic signed [13:0] sat_s16_to_s14(input logic signed [15:0] x);
+    begin
+        if (x > 16'sd8191) begin
+            sat_s16_to_s14 = 14'sd8191;
+        end else if (x < -16'sd8192) begin
+            sat_s16_to_s14 = -14'sd8192;
+        end else begin
+            sat_s16_to_s14 = x[13:0];
+        end
+    end
+endfunction
+
+assign I_dac_s14 = sat_s16_to_s14(I_filtered);
+assign Q_dac_s14 = sat_s16_to_s14(Q_filtered);
+assign dds_iq_q_s16 = dds_iq_tdata[31:16];
+assign dds_iq_i_s16 = dds_iq_tdata[15:0];
+assign bpsk_i_s16 = bpsk_i_bit ? dds_iq_i_s16 : -dds_iq_i_s16;
+assign bpsk_q_s16 = bpsk_q_bit ? dds_iq_q_s16 : -dds_iq_q_s16;
+assign bpsk_i_s14 = sat_s16_to_s14(bpsk_i_s16 >>> 2);
+assign bpsk_q_s14 = sat_s16_to_s14(bpsk_q_s16 >>> 2);
 
 // Reset synchronizer for dds_tone_core: i_rst is 125 MHz, dac1_clk is 500 MHz.
 always @(posedge i_dac1_clk or posedge i_rst) begin
@@ -69,14 +185,14 @@ always @(posedge i_dac1_clk or posedge i_rst) begin
 end
 assign tone_aresetn = dac1_rst_sync2;
 
-// PINC FFs on posedge to match DDS s_axis_phase_tdata posedge capture.
+
 logic [1:0] dac_counter;
 logic dac_quarter_clock;
 logic dac_quarter_clock_bufg;
 always @(posedge i_dac1_clk) begin
     if (!tone_aresetn) begin
-        tone_pinc_dac1_ff1 <= 16'd1311;
-        tone_pinc_dac1_ff2 <= 16'd1311;
+        tone_pinc_dac1_ff1 <= 32'h0000_13AF;
+        tone_pinc_dac1_ff2 <= 32'h0000_13AF;
     end else begin
         tone_pinc_dac1_ff1 <= i_tone_pinc;
         tone_pinc_dac1_ff2 <= tone_pinc_dac1_ff1;
@@ -104,6 +220,7 @@ dds_compiler_0 dds_tone_core (
     .m_axis_phase_tvalid(),  // unused
     .m_axis_phase_tdata()    // unused
 );
+
 
 wire [7:0] iq_mask;
 wire [7:0] encoded_byte;
@@ -144,8 +261,8 @@ wire signed [15:0] tone_dds_q_s16;
 
 // Two's complement: pass signed samples directly to the DAC (no offset conversion needed)
 
-assign iq_mask = dds_tdata[7:0] ^ dds_tdata[23:16];
-assign encoded_byte = i_s_axis_tdata ^ iq_mask;
+assign iq_mask = 8'b1001_0011;
+assign encoded_byte = eth_data_dac1 ^ iq_mask;
 assign decoded_byte = encoded_byte ^ iq_mask;
 
 assign out_ready_for_new = ~out_valid_reg || i_m_axis_tready;
@@ -161,22 +278,23 @@ assign symbol_i = ~symbol_bits[1];
 assign symbol_q = ~symbol_bits[0];
 
 // Use DDS sign bits as a simple carrier for a first-pass digital modulation stage.
-assign carrier_i = dds_tdata[15];
-assign carrier_q = dds_tdata[31];
+assign carrier_i = 1'b0; // Unused: always 0, so carrier is effectively BPSK on Q.
+assign carrier_q = 1'b1;
 assign mod_i = symbol_i ^ carrier_i;
 assign mod_q = symbol_q ^ carrier_q;
 assign tx_symbol_valid = mod_busy_reg && dds_tvalid;
 
 assign tone_mode_dac1 = tone_mode_dac1_ff2;
-assign tone_dds_i_s16 = tone_dds_tdata[31:16];
-assign tone_dds_q_s16 = tone_dds_tdata[15:0];
+assign tone_dds_q_s16 = tone_dds_tdata[31:16];
+assign tone_dds_i_s16 = tone_dds_tdata[15:0];
 assign tone_dac1_h = tone_dds_i_s16[13:0];
 assign tone_dac1_l = tone_dds_q_s16[13:0];
 assign tone_dac2_h = tone_dds_q_s16[15:2];
 assign tone_dac2_l = tone_dds_q_s16[15:2];
 
+
 fl9781_tx_wrapper fl9781_tx_wrapper_inst (
-    .i_clk(i_clk),
+    .i_clk(i_dac1_clk),
     .i_rst(i_rst),
     .i_symbol_valid(tx_symbol_valid),
     .i_symbol_i(mod_i),
@@ -195,9 +313,9 @@ wire [13:0] dac1_l_mux;
 wire [13:0] dac2_h_mux;
 wire [13:0] dac2_l_mux;
 
-assign dac_sample_valid_mux = tone_mode_dac1 ? tone_dds_tvalid : tx_symbol_valid;
-assign dac1_h_mux = tone_mode_dac1 ? tone_dac1_h : dac1_h;
-assign dac1_l_mux = tone_mode_dac1 ? tone_dac1_l : dac1_l;
+assign dac_sample_valid_mux = tone_mode_dac1 ? tone_dds_tvalid : dds_iq_tvalid;
+assign dac1_h_mux = tone_mode_dac1 ? tone_dac1_h : bpsk_i_s14;
+assign dac1_l_mux = tone_mode_dac1 ? tone_dac1_l : bpsk_q_s14;
 assign dac2_h_mux = DAC_PARK_MIDSCALE;
 assign dac2_l_mux = DAC_PARK_MIDSCALE;
 
@@ -222,13 +340,13 @@ always @(negedge i_dac1_clk) begin
     if (i_rst) begin
         tone_mode_dac1_ff1 <= 1'b0;
         tone_mode_dac1_ff2 <= 1'b0;
-        tone_pinc_dac1_stable <= 16'd1311;
+        tone_pinc_dac1_stable <= 32'h7AE147A;
     end else begin
         tone_mode_dac1_ff1 <= i_tone_mode;
         tone_mode_dac1_ff2 <= tone_mode_dac1_ff1;
         // Accept a new increment only after two consecutive DAC-domain samples agree.
         if (tone_pinc_dac1_ff1 == tone_pinc_dac1_ff2) begin
-            tone_pinc_dac1_stable <= tone_pinc_dac1_ff2;
+            tone_pinc_dac1_stable <= tone_pinc_dac1_ff2[15:0];
         end
     end
 

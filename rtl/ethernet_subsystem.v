@@ -83,7 +83,7 @@ module ethernet_subsystem #
     input  wire       uart_cts,
 
     output wire       reg_tone_mode,
-    output wire [15:0] o_reg_tone_pinc,
+    output wire [31:0] o_reg_tone_pinc,
     output wire [4:0] reg_dac1_delay,
     output wire [4:0] reg_dac2_delay,
     output wire       reg_dac_delay_apply_toggle,

@@ -15,7 +15,10 @@ set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 set_property -dict {LOC AD12 IOSTANDARD LVDS} [get_ports CLK_200MHZ_P]
 set_property -dict {LOC AD11 IOSTANDARD LVDS} [get_ports CLK_200MHZ_N]
 create_clock -period 5.000 -name clk_200mhz [get_ports CLK_200MHZ_P]
-create_clock -period 4.000 -name dac1_dco_clk
+#create_clock -period 6.000 -name dac1_dco_clk
+
+# Test Header to User SMA
+set_property -dict {LOC Y23 IOSTANDARD LVCMOS25} [get_ports USER_SMA_GPIO_P]
 
 # LEDs
 set_property -dict {LOC AB8 IOSTANDARD LVCMOS15 SLEW SLOW DRIVE 12} [get_ports {LED[0]}]
@@ -137,7 +140,11 @@ set_property IOSTANDARD LVDS_25 [get_ports DAC1_DCI_N]
 set_property IOSTANDARD LVDS_25 [get_ports DAC1_DCO_P]
 set_property IOSTANDARD LVDS_25 [get_ports DAC1_DCO_N]
 # Reference-style debug build: leave DAC DCO unconstrained like the Alinx examples.
-create_clock -period 4.000 -name dac1_dco_clk [get_ports DAC1_DCO_P]
+create_clock -period 6.000 -name dac1_dco_clk [get_ports DAC1_DCO_P]
+set_multicycle_path -setup -from [get_clocks dac1_dco_clk] -to [get_clocks clk_mmcm_out] 5
+set_multicycle_path -hold -from [get_clocks dac1_dco_clk] -to [get_clocks clk_mmcm_out] 5
+set_multicycle_path -setup -from [get_clocks clk_mmcm_out] -to [get_clocks dac1_dco_clk] 5
+set_multicycle_path -hold -from [get_clocks clk_mmcm_out] -to [get_clocks dac1_dco_clk] 5
 
 set_property PACKAGE_PIN AE23 [get_ports DAC1_DCI_P]
 set_property PACKAGE_PIN AD23 [get_ports DAC1_DCO_P]
@@ -161,8 +168,11 @@ set_property IOSTANDARD LVDS_25 [get_ports DAC2_DCI_P]
 set_property IOSTANDARD LVDS_25 [get_ports DAC2_DCI_N]
 set_property IOSTANDARD LVDS_25 [get_ports DAC2_DCO_P]
 set_property IOSTANDARD LVDS_25 [get_ports DAC2_DCO_N]
-create_clock -period 4.000 -name dac2_dco_clk [get_ports DAC2_DCO_P]
-
+create_clock -period 6.000 -name dac2_dco_clk [get_ports DAC2_DCO_P]
+set_multicycle_path -setup -from [get_clocks dac2_dco_clk] -to [get_clocks clk_mmcm_out] 5
+set_multicycle_path -hold -from [get_clocks dac2_dco_clk] -to [get_clocks clk_mmcm_out] 5
+set_multicycle_path -setup -from [get_clocks clk_mmcm_out] -to [get_clocks dac2_dco_clk] 5
+set_multicycle_path -hold -from [get_clocks clk_mmcm_out] -to [get_clocks dac2_dco_clk] 5
 # DAC DCO clocks come from external source and are not phase-related to FPGA MMCM clocks.
 # Also treat DAC1 and DAC2 DCO as asynchronous to each other.
 # set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks clk_200mhz] -group [get_clocks dac1_dco_clk] -group [get_clocks dac2_dco_clk]
@@ -609,6 +619,7 @@ set_property PACKAGE_PIN AJ26 [get_ports {DAC2_DATA_P[13]}]
 connect_debug_port u_ila_0/probe0 [get_nets [list {dac1_l_debug[0]} {dac1_l_debug[1]} {dac1_l_debug[2]} {dac1_l_debug[3]} {dac1_l_debug[4]} {dac1_l_debug[5]} {dac1_l_debug[6]} {dac1_l_debug[7]} {dac1_l_debug[8]} {dac1_l_debug[9]} {dac1_l_debug[10]} {dac1_l_debug[11]} {dac1_l_debug[12]} {dac1_l_debug[13]}]]
 connect_debug_port u_ila_0/probe1 [get_nets [list {dac1_h_debug[0]} {dac1_h_debug[1]} {dac1_h_debug[2]} {dac1_h_debug[3]} {dac1_h_debug[4]} {dac1_h_debug[5]} {dac1_h_debug[6]} {dac1_h_debug[7]} {dac1_h_debug[8]} {dac1_h_debug[9]} {dac1_h_debug[10]} {dac1_h_debug[11]} {dac1_h_debug[12]} {dac1_h_debug[13]}]]
 connect_debug_port u_ila_0/probe3 [get_nets [list dac_tone_mode_debug]]
+
 
 
 
