@@ -130,7 +130,7 @@ $(PROJECT).bit $(PROJECT).ltx: $(PROJECT).runs/impl_1/$(PROJECT)_routed.dcp
 	ln -f -s $(PROJECT).runs/impl_1/$(PROJECT).bit .
 	if [ -e $(PROJECT).runs/impl_1/$(PROJECT).ltx ]; then ln -f -s $(PROJECT).runs/impl_1/$(PROJECT).ltx .; fi
 	mkdir -p rev
-	COUNT=102; \
+	COUNT=103; \
 	while [ -e rev/$(PROJECT)_rev$$COUNT.bit ]; \
 	do COUNT=$$((COUNT+1)); done; \
 	cp -pv $(PROJECT).runs/impl_1/$(PROJECT).bit rev/$(PROJECT)_rev$$COUNT.bit; \

@@ -9,6 +9,7 @@ module afifo_wrapper #(
     input  wire                   i_w_rst,
     (*mark_debug = "true"*)
     input  wire [7:0]             i_w_data,
+    input  wire                   i_w_valid,
     output wire [15:0]             o_r_data,
     output wire                   o_data_valid
 );
@@ -114,7 +115,7 @@ xpm_fifo_async_inst (
                                   // block is in power saving mode.
    .wr_clk(i_w_clk),               // 1-bit input: Write clock: Used for write operation. wr_clk must be a
                                   // free running clock.
-   .wr_en(i_w_data != 8'b0)                  // 1-bit input: Write Enable: If the FIFO is not full, asserting this
+    .wr_en(i_w_valid)                          // 1-bit input: Write Enable: If the FIFO is not full, asserting this
                                   // signal causes data (on din) to be written to the FIFO. Must be held
                                   // active-low when rst or wr_rst_busy is active high.
 );

@@ -89,8 +89,27 @@ module KC705_EEE299_top (
 	output wire[13:0]      DAC2_DATA_P, //dac output data p
 	output wire[13:0]      DAC2_DATA_N,  //dac output data n
 
-    output wire            USER_SMA_GPIO_P
+    output wire            USER_SMA_GPIO_P,
 
+    //ADC Pins
+	output wire            ADC1_CLK_REF,//clk to first AD9627
+	output wire            ADC2_CLK_REF,//clk to second AD9627
+	
+	output wire            ADC1_SPI_CE, //adc1 chip spi select
+	output wire            ADC1_SPI_SCLK,//adc1 spi clk
+	inout wire             ADC1_SPI_IO,  //spi data
+	input wire             ADC1_CLK_P,  //adc1 clk from ad9627
+	input wire             ADC1_CLK_N,	
+	input wire[11:0]       ADC1_DATA_P, //adc1 data
+	input wire[11:0]       ADC1_DATA_N,
+	
+	output wire            ADC2_SPI_CE,//adc2 chip spi select
+	output wire            ADC2_SPI_SCLK,//adc2 spi clk
+	inout wire             ADC2_SPI_IO,//spi data
+	input wire             ADC2_CLK_P,//adc2 clk from ad9627
+	input wire             ADC2_CLK_N,
+	input wire[11:0]       ADC2_DATA_P,//adc2 data
+	input wire[11:0]       ADC2_DATA_N
 
 );
 
@@ -561,7 +580,7 @@ iq_codec_loop iq_codec_loop_inst (
 reg helpme;
 
 
-(* mark_debug = "true" *) reg [13:0] dac1_h_dbg_250;
+/*(* mark_debug = "true" *) reg [13:0] dac1_h_dbg_250;
 (* mark_debug = "true" *) reg [13:0] dac1_l_dbg_250;
 (* mark_debug = "true" *) reg        dac_tone_mode_dbg_250;
 always @(posedge clk_250mhz_int) begin
@@ -577,7 +596,7 @@ always @(posedge clk_500mhz_int) begin
     dac1_h_dbg_500 <= dac1_h;
     dac1_l_dbg_500 <= dac1_l;
     dac_tone_mode_dbg_500 <= dac_tone_mode;
-end
+end*/
 
 assign dac1_h = iq_dac1_h;
 assign dac1_l = iq_dac1_l;
@@ -679,6 +698,30 @@ dac_config dac_config_inst(
 	.spi_sdio		   (SPI_SDIO),
 	.spi_sdo           (SPI_SDO)
     );
+
+adc_top adc_top_inst (
+    .clk_50M(clk_spi), //in
+    .clk_125M(clk_int),
+    .locked(mmcm_locked),
+    .rst_n(~rst_int), //in
+    .adc1_spi_ce(ADC1_SPI_CE),
+    .adc1_spi_sclk(ADC1_SPI_SCLK),
+    .adc1_spi_io(ADC1_SPI_IO),
+    .adc1_clk_ref(ADC1_CLK_REF),
+    .adc1_clk_p(ADC1_CLK_P),
+    .adc1_clk_n(ADC1_CLK_N),
+    .adc1_data_p(ADC1_DATA_P),
+    .adc1_data_n(ADC1_DATA_N),
+    .adc2_spi_ce(ADC2_SPI_CE),
+    .adc2_spi_sclk(ADC2_SPI_SCLK),
+    .adc2_spi_io(ADC2_SPI_IO),
+    .adc2_clk_ref(ADC2_CLK_REF),
+    .adc2_clk_p(ADC2_CLK_P),
+    .adc2_clk_n(ADC2_CLK_N),
+    .adc2_data_p(ADC2_DATA_P),
+    .adc2_data_n(ADC2_DATA_N)
+);
+
 
 
 reg [7:0] dac1_clk_divide;
