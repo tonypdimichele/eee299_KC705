@@ -10,8 +10,10 @@ module afifo_wrapper #(
     (*mark_debug = "true"*)
     input  wire [7:0]             i_w_data,
     input  wire                   i_w_valid,
+    input  wire                   i_r_ready,
     output wire [15:0]             o_r_data,
-    output wire                   o_data_valid
+    output wire                   o_data_valid,
+    output wire                   o_w_almost_full
 );
 
 
@@ -24,15 +26,15 @@ module afifo_wrapper #(
 wire empty;
 wire full;
 wire almost_full;
-wire data_valid;
 wire [15:0] read_data;
 wire rd_rst_busy;
+wire rd_en;
 xpm_fifo_async #(
    .CDC_SYNC_STAGES(2),       // DECIMAL
    .DOUT_RESET_VALUE("0"),    // String
    .ECC_MODE("no_ecc"),       // String
    .FIFO_MEMORY_TYPE("auto"), // String
-   .FIFO_READ_LATENCY(0),     // DECIMAL
+   .FIFO_READ_LATENCY(1),     // DECIMAL
    .FIFO_WRITE_DEPTH(2048),   // DECIMAL
    .FULL_RESET_VALUE(0),      // DECIMAL
    .PROG_EMPTY_THRESH(10),    // DECIMAL
@@ -54,7 +56,7 @@ xpm_fifo_async_inst (
                                   // only one more read can be performed before the FIFO goes to empty.
    .almost_full(almost_full),     // 1-bit output: Almost Full: When asserted, this signal indicates that
                                   // only one more write can be performed before the FIFO is full.
-   .data_valid(data_valid),       // 1-bit output: Read Data Valid: When asserted, this signal indicates
+   .data_valid(),       // 1-bit output: Read Data Valid: When asserted, this signal indicates
                                   // that valid data is available on the output bus (dout).
    .dbiterr(),             // 1-bit output: Double Bit Error: Indicates that the ECC decoder detected
                                   // a double-bit error and data in the FIFO core is corrupted.
@@ -105,7 +107,7 @@ xpm_fifo_async_inst (
                                   // the ECC feature is used on block RAMs or UltraRAM macros.
    .rd_clk(i_r_clk),              // 1-bit input: Read clock: Used for read operation. rd_clk must be a free
                                   // running clock.
-   .rd_en(valid_flag),                // 1-bit input: Read Enable: If the FIFO is not empty, asserting this
+    .rd_en(rd_en),                // 1-bit input: Read Enable: If the FIFO is not empty, asserting this
                                   // signal causes data (on dout) to be read from the FIFO. Must be held
                                   // active-low when rd_rst_busy is active high.
    .rst(i_w_rst),                 // 1-bit input: Reset: Must be synchronous to wr_clk. The clock(s) can be
@@ -120,33 +122,29 @@ xpm_fifo_async_inst (
                                   // active-low when rst or wr_rst_busy is active high.
 );
 
-logic empty_ff, empty_ff2, rd_en, valid_flag, valid_ff;
-logic [6:0] read_count = 0; //read once every 8 cycles in read clock domain because we are reading 8-bits and need to sample the analog waveform that long
-logic [15:0] r_data = 0;
-always_ff @(posedge i_r_clk) begin
-    if (i_w_rst) begin
-        empty_ff <= 1'b1;
-    end else begin
-        empty_ff <= empty;
-        empty_ff2 <= empty_ff;
-        valid_ff <= data_valid;
-    end
+assign rd_en = i_r_ready && !empty && !rd_rst_busy;
 
-   if (~empty_ff) begin
-        read_count <= read_count + 1;
-   end
-   valid_flag <= (read_count == 7'b1111111) ? 1'b1 : 1'b0;
-   
-   if (valid_flag) begin
-    r_data <= read_data;
+logic rd_en_d;
+logic [15:0] r_data;
+logic r_valid;
+
+always_ff @(posedge i_r_clk) begin
+   if (i_w_rst) begin
+      rd_en_d <= 1'b0;
+      r_data <= 16'd0;
+      r_valid <= 1'b0;
    end else begin
-    r_data <= 15'b0;
+      rd_en_d <= rd_en;
+      r_valid <= rd_en_d;
+      if (rd_en_d) begin
+         r_data <= read_data;
+      end
    end
 end
 
-
-assign o_data_valid = valid_flag;
+assign o_data_valid = r_valid;
 assign o_r_data = r_data;
+assign o_w_almost_full = almost_full;
 
 
 endmodule

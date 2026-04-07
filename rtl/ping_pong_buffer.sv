@@ -12,7 +12,7 @@ module ping_pong_buffer #(
     input  logic                  i_s_axis_tvalid,
     output logic                  o_s_axis_tready,
     input  logic                  i_s_axis_tlast,
-
+   (*mark_debug = "true"*)
     output logic [DATA_WIDTH-1:0] o_m_axis_tdata,
     output logic                  o_m_axis_tvalid,
     input  logic                  i_m_axis_tready,

@@ -34,7 +34,10 @@ module adc_top(
 	input                     rst_n,        //low reset
 	output                    adc1_clk_ref,//clk to first AD9627
 	output                    adc2_clk_ref,//clk to second AD9627
-	
+	(* MARK_DEBUG="true" *)
+	output reg [11:0] 			  adc1_data_a_d0,
+	(* MARK_DEBUG="true" *)	
+	output reg [11:0] 			  adc1_data_b_d0,
 	output                    adc1_spi_ce, //adc1 chip spi select
 	output                    adc1_spi_sclk,//adc1 spi clk
 	inout                     adc1_spi_io,  //spi data
@@ -42,38 +45,40 @@ module adc_top(
 	input                     adc1_clk_n,	
 	input[11:0]               adc1_data_p, //adc1 data
 	input[11:0]               adc1_data_n,
-	
+	output [11:0]             adc1_data,
 	output                    adc2_spi_ce,//adc2 chip spi select
 	output                    adc2_spi_sclk,//adc2 spi clk
 	inout                     adc2_spi_io,//spi data
 	input                     adc2_clk_p,//adc2 clk from ad9627
 	input                     adc2_clk_n,
 	input[11:0]               adc2_data_p,//adc2 data
-	input[11:0]               adc2_data_n
+	input[11:0]               adc2_data_n,
+	output [11:0]             adc2_data,
+	output 				   	  adc1_clk
     );
                                  
-wire clk_50m;
-wire clk_125m;
+//wire clk_50m;
+//wire clk_125m;
 //wire locked;
 wire[9:0]                       adc1_lut_index;
 wire[24:0]                      adc1_lut_data;
 wire[9:0]                       adc2_lut_index;
 wire[24:0]                      adc2_lut_data;
-wire                            adc1_clk;
+//wire                            adc1_clk;
 wire                            adc2_clk;
-wire[11:0]                      adc1_data;
+//wire[11:0]                      adc1_data;
 wire[11:0]                      adc1_data_a;
 wire[11:0]                      adc1_data_b;
-wire[11:0]                      adc2_data;
+//wire[11:0]                      adc2_data;
 wire[11:0]                      adc2_data_a;
 wire[11:0]                      adc2_data_b;
-(* MARK_DEBUG="true" *)reg[11:0] adc1_data_a_d0;
-(* MARK_DEBUG="true" *)reg[11:0] adc1_data_b_d0;
+
+//(* MARK_DEBUG="true" *)reg[11:0] adc1_data_b_d0;
 (* MARK_DEBUG="true" *)reg[11:0] adc2_data_a_d0;
 (* MARK_DEBUG="true" *)reg[11:0] adc2_data_b_d0;
 assign fan_pwm=1'b0;
-assign adc2_clk_ref = clk_125m;
-assign adc1_clk_ref = clk_125m;
+assign adc2_clk_ref = clk_125M;
+assign adc1_clk_ref = clk_125M;
 
 IBUFDS #(
 	.DIFF_TERM("TRUE"),       // Differential Termination
@@ -110,14 +115,14 @@ generate
 		);
 		
 		IDDR #(
-		.DDR_CLK_EDGE("OPPOSITE_EDGE"), // "OPPOSITE_EDGE", "SAME_EDGE" 
+		.DDR_CLK_EDGE("SAME_EDGE"), // "OPPOSITE_EDGE", "SAME_EDGE" 
 										//    or "SAME_EDGE_PIPELINED" 
 		.INIT_Q1(1'b0), // Initial value of Q1: 1'b0 or 1'b1
 		.INIT_Q2(1'b0), // Initial value of Q2: 1'b0 or 1'b1
 		.SRTYPE("ASYNC") // Set/Reset type: "SYNC" or "ASYNC" 
         ) IDDR_adc1_data (
-		.Q1(adc1_data_b[i]), // 1-bit output for positive edge of clock 
-		.Q2(adc1_data_a[i]), // 1-bit output for negative edge of clock
+		.Q1(adc1_data_a[i]), // 1-bit output for positive edge of clock 
+		.Q2(adc1_data_b[i]), // 1-bit output for negative edge of clock
 		.C(adc1_clk),   // 1-bit clock input
 		.CE(1'b1), // 1-bit clock enable input
 		.D(adc1_data[i]),   // 1-bit DDR data input
@@ -136,14 +141,14 @@ generate
 		);
 		
 		IDDR #(
-		.DDR_CLK_EDGE("OPPOSITE_EDGE"), // "OPPOSITE_EDGE", "SAME_EDGE" 
+		.DDR_CLK_EDGE("SAME_EDGE"), // "OPPOSITE_EDGE", "SAME_EDGE" 
 										//    or "SAME_EDGE_PIPELINED" 
 		.INIT_Q1(1'b0), // Initial value of Q1: 1'b0 or 1'b1
 		.INIT_Q2(1'b0), // Initial value of Q2: 1'b0 or 1'b1
 		.SRTYPE("ASYNC") // Set/Reset type: "SYNC" or "ASYNC" 
         ) IDDR_adc2_data (
-		.Q1(adc2_data_b[i]), // 1-bit output for positive edge of clock 
-		.Q2(adc2_data_a[i]), // 1-bit output for negative edge of clock
+		.Q1(adc2_data_a[i]), // 1-bit output for positive edge of clock 
+		.Q2(adc2_data_b[i]), // 1-bit output for negative edge of clock
 		.C(adc2_clk),   // 1-bit clock input
 		.CE(1'b1), // 1-bit clock enable input
 		.D(adc2_data[i]),   // 1-bit DDR data input
@@ -183,8 +188,8 @@ adc_lut_config lut_config_adc1(
 );
 adc_spi_config spi_config_adc1(
 	.rst                        (~locked                  ),
-	.clk                        (clk_50m                  ),
-	.clk_div_cnt                (16'd500                  ),
+	.clk                        (clk_50M                  ),
+	.clk_div_cnt                (16'd50                  ),
 	.lut_index                  (adc1_lut_index           ),
 	.lut_reg_addr               (adc1_lut_data[23:8]      ),
 	.lut_reg_data               (adc1_lut_data[7:0]       ),
@@ -201,8 +206,8 @@ adc_lut_config lut_config_adc2(
 );
 adc_spi_config spi_config_adc2(
 	.rst                        (~locked                  ),
-	.clk                        (clk_50m                  ),
-	.clk_div_cnt                (16'd500                  ),
+	.clk                        (clk_50M                  ),
+	.clk_div_cnt                (16'd50                  ),
 	.lut_index                  (adc2_lut_index           ),
 	.lut_reg_addr               (adc2_lut_data[23:8]      ),
 	.lut_reg_data               (adc2_lut_data[7:0]       ),

@@ -52,8 +52,11 @@ afifo_wrapper afifo_wrapper_data_iq (
     .i_w_clk(i_clk),
     .i_w_rst(i_rst),
     .i_w_data(i_s_axis_tdata),
+    .i_w_valid(i_s_axis_tvalid),
+    .i_r_ready(1'b1),
     .o_r_data(eth_data_dac1),
-    .o_data_valid(eth_data_valid)
+    .o_data_valid(eth_data_valid),
+    .o_w_almost_full()
 );
 
 

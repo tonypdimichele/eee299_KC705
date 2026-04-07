@@ -119,9 +119,9 @@ wire clk_200mhz_ibufg;
 
 // Internal 125 MHz clock
 wire clk_mmcm_out;
-wire clk_int;
+(* keep = "true" *) wire clk_int;
 wire clk90_mmcm_out;
-wire clk90_int;
+(* keep = "true" *) wire clk90_int;
 wire rst_int;
 
 wire clk_200mhz_mmcm_out, clk_50mhz_mmcm_out, clk_250mhz_mmcm_out, clk_500mhz_mmcm_out, clk_spi;
@@ -422,6 +422,11 @@ wire [7:0] iq_codec_tdata;
 wire       iq_codec_tvalid;
 wire       iq_codec_tready;
 wire       iq_codec_tlast;
+(* mark_debug = "true" *) 
+(* mark_debug = "true" *) wire [7:0] adc_rx_axis_tdata;
+(* mark_debug = "true" *) wire       adc_rx_axis_tvalid;
+(* mark_debug = "true" *) wire       adc_rx_axis_tready;
+(* mark_debug = "true" *) wire       adc_rx_axis_tlast;
 wire       iq_dac_sample_valid;
 wire [13:0] iq_dac1_h;
 wire [13:0] iq_dac1_l;
@@ -545,10 +550,10 @@ ping_pong_buffer #(
 ) ping_pong_buffer_rx (
     .clk(clk_int),
     .rst(rst_int),
-    .i_s_axis_tdata(iq_codec_tdata),
-    .i_s_axis_tvalid(iq_codec_tvalid),
-    .o_s_axis_tready(iq_codec_tready),
-    .i_s_axis_tlast(iq_codec_tlast),
+    .i_s_axis_tdata(adc_rx_axis_tdata),
+    .i_s_axis_tvalid(adc_rx_axis_tvalid),
+    .o_s_axis_tready(adc_rx_axis_tready),
+    .i_s_axis_tlast(adc_rx_axis_tlast),
     .o_m_axis_tdata(rx_ring_buffer_tdata),
     .o_m_axis_tvalid(rx_ring_buffer_tvalid),
     .i_m_axis_tready(rx_ring_buffer_tready),
@@ -568,7 +573,7 @@ iq_codec_loop iq_codec_loop_inst (
     .i_s_axis_tlast(tx_ring_buffer_tlast),
     .o_m_axis_tdata(iq_codec_tdata),
     .o_m_axis_tvalid(iq_codec_tvalid),
-    .i_m_axis_tready(iq_codec_tready),
+    .i_m_axis_tready(1'b1),
     .o_m_axis_tlast(iq_codec_tlast),
     .o_dac_sample_valid(iq_dac_sample_valid),
     .o_dac1_h(iq_dac1_h),
@@ -699,11 +704,26 @@ dac_config dac_config_inst(
 	.spi_sdo           (SPI_SDO)
     );
 
+
+
+
+wire [11:0] adc1_data;
+wire [11:0] adc2_data;
+wire [11:0] adc1_data_a_d0;
+wire [11:0] adc1_data_b_d0;
+wire adc1_clk;
+wire adc1_rst_int;
+sync_reset #(.N(2)) adc1_rst_sync (
+    .clk(adc1_clk),
+    .rst(rst_int),
+    .out(adc1_rst_int)
+);
+
 adc_top adc_top_inst (
     .clk_50M(clk_spi), //in
     .clk_125M(clk_int),
     .locked(mmcm_locked),
-    .rst_n(~rst_int), //in
+    .rst_n(~adc1_rst_int), //in
     .adc1_spi_ce(ADC1_SPI_CE),
     .adc1_spi_sclk(ADC1_SPI_SCLK),
     .adc1_spi_io(ADC1_SPI_IO),
@@ -712,6 +732,7 @@ adc_top adc_top_inst (
     .adc1_clk_n(ADC1_CLK_N),
     .adc1_data_p(ADC1_DATA_P),
     .adc1_data_n(ADC1_DATA_N),
+    .adc1_data(adc1_data),
     .adc2_spi_ce(ADC2_SPI_CE),
     .adc2_spi_sclk(ADC2_SPI_SCLK),
     .adc2_spi_io(ADC2_SPI_IO),
@@ -719,8 +740,122 @@ adc_top adc_top_inst (
     .adc2_clk_p(ADC2_CLK_P),
     .adc2_clk_n(ADC2_CLK_N),
     .adc2_data_p(ADC2_DATA_P),
-    .adc2_data_n(ADC2_DATA_N)
+    .adc2_data_n(ADC2_DATA_N),
+    .adc2_data(adc2_data),
+    .adc1_clk(adc1_clk),
+    .adc1_data_a_d0(adc1_data_a_d0),
+	.adc1_data_b_d0(adc1_data_b_d0)
 );
+
+reg [1:0]  adc_iq_decim_cnt;
+reg [31:0] adc_tx_shift;
+reg [2:0]  adc_tx_bytes_pending;
+reg [31:0] adc_drop_count;
+(* mark_debug = "true" *) reg [7:0]  adc_fifo_w_data;
+(* mark_debug = "true" *) reg        adc_fifo_w_valid;
+(* mark_debug = "true" *) wire       adc_fifo_w_almost_full;
+(* mark_debug = "true" *) wire [15:0] adc_fifo_r_data;
+(* mark_debug = "true" *) wire       adc_fifo_r_valid;
+(* mark_debug = "true" *) wire       adc_fifo_r_ready;
+(* mark_debug = "true" *) reg [15:0] adc_fifo_word_hold;
+(* mark_debug = "true" *) reg        adc_fifo_word_valid;
+(* mark_debug = "true" *) reg        adc_fifo_word_low_byte;
+(* mark_debug = "true" *) reg [10:0] adc_rx_frame_byte_count;
+(* mark_debug = "true" *) wire       adc_rx_axis_hs;
+(* mark_debug = "true" *) wire       adc_rx_axis_last_beat;
+
+localparam [10:0] ADC_RX_FRAME_BYTES = 11'd512;
+localparam [1:0]  ADC_IQ_DECIM = 2'd3; // Emit one I/Q pair every 4 adc1_clk cycles
+
+always @(posedge adc1_clk) begin
+    if (adc1_rst_int) begin
+        adc_iq_decim_cnt <= 2'd0;
+        adc_tx_shift <= 32'd0;
+        adc_tx_bytes_pending <= 3'd0;
+        adc_drop_count <= 32'd0;
+        adc_fifo_w_data <= 8'd0;
+        adc_fifo_w_valid <= 1'b0;
+    end else begin
+        adc_fifo_w_valid <= 1'b0;
+
+        if (adc_iq_decim_cnt == ADC_IQ_DECIM) begin
+            adc_iq_decim_cnt <= 2'd0;
+            if (adc_tx_bytes_pending == 3'd0) begin
+                // Pack interleaved IQ from IDDR outputs:
+                // I(cos): adc1_data_a_d0, Q(sin): adc1_data_b_d0
+                adc_tx_shift <= {
+                    {4'h0, adc1_data_a_d0[11:8]},
+                    adc1_data_a_d0[7:0],
+                    {4'h0, adc1_data_b_d0[11:8]},
+                    adc1_data_b_d0[7:0]
+                };
+                adc_tx_bytes_pending <= 3'd4;
+            end else begin
+                adc_drop_count <= adc_drop_count + 1'b1;
+            end
+        end else begin
+            adc_iq_decim_cnt <= adc_iq_decim_cnt + 1'b1;
+        end
+
+        if ((adc_tx_bytes_pending != 3'd0) && !adc_fifo_w_almost_full) begin
+            adc_fifo_w_valid <= 1'b1;
+            adc_fifo_w_data <= adc_tx_shift[31:24];
+            adc_tx_shift <= {adc_tx_shift[23:0], 8'h00};
+            adc_tx_bytes_pending <= adc_tx_bytes_pending - 1'b1;
+        end
+    end
+end
+
+afifo_wrapper adc_to_eth_afifo_inst (
+    .i_r_clk(clk_int),
+    .i_w_clk(adc1_clk),
+    .i_w_rst(adc1_rst_int),
+    .i_w_data(adc_fifo_w_data),
+    .i_w_valid(adc_fifo_w_valid),
+    .i_r_ready(adc_fifo_r_ready),
+    .o_r_data(adc_fifo_r_data),
+    .o_data_valid(adc_fifo_r_valid),
+    .o_w_almost_full(adc_fifo_w_almost_full)
+);
+
+always @(posedge clk_int) begin
+    if (rst_int) begin
+        adc_fifo_word_hold <= 16'd0;
+        adc_fifo_word_valid <= 1'b0;
+        adc_fifo_word_low_byte <= 1'b0;
+        adc_rx_frame_byte_count <= 11'd0;
+    end else begin
+        if (!adc_fifo_word_valid && adc_fifo_r_valid) begin
+            adc_fifo_word_hold <= adc_fifo_r_data;
+            adc_fifo_word_valid <= 1'b1;
+            adc_fifo_word_low_byte <= 1'b0;
+        end
+
+        if (adc_fifo_word_valid && adc_rx_axis_tready) begin
+            if (!adc_fifo_word_low_byte) begin
+                adc_fifo_word_low_byte <= 1'b1;
+            end else begin
+                adc_fifo_word_low_byte <= 1'b0;
+                adc_fifo_word_valid <= 1'b0;
+            end
+        end
+
+        if (adc_rx_axis_hs) begin
+            if (adc_rx_axis_last_beat) begin
+                adc_rx_frame_byte_count <= 11'd0;
+            end else begin
+                adc_rx_frame_byte_count <= adc_rx_frame_byte_count + 1'b1;
+            end
+        end
+    end
+end
+
+assign adc_fifo_r_ready = !adc_fifo_word_valid;
+assign adc_rx_axis_tdata = adc_fifo_word_low_byte ? adc_fifo_word_hold[7:0] : adc_fifo_word_hold[15:8];
+assign adc_rx_axis_tvalid = adc_fifo_word_valid;
+assign adc_rx_axis_hs = adc_rx_axis_tvalid && adc_rx_axis_tready;
+assign adc_rx_axis_last_beat = (adc_rx_frame_byte_count == ADC_RX_FRAME_BYTES-1);
+assign adc_rx_axis_tlast = adc_rx_axis_last_beat;
 
 
 

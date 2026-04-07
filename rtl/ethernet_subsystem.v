@@ -659,40 +659,36 @@ axi_lite_regs u_regs (
 //   UDP/20000 ingress metadata is latched and used to drive UDP/30000 egress
 //   while payload data is provided by external logic via s_axis_rpi_tx_*.
 // -----------------------------------------------------------------------------
-reg        app3_loop_hdr_pending = 1'b0;
+reg        app3_loop_dest_valid  = 1'b0;
 reg [31:0] app3_loop_ip_dst      = 32'd0;
 reg [15:0] app3_loop_udp_dst     = 16'd0;
-reg [15:0] app3_loop_len         = 16'd0;
 
-// Only accept a new ingress header when no TX header is pending.
-assign app2_rx_hdr_ready = ~app3_loop_hdr_pending;
+localparam [15:0] APP3_TX_PAYLOAD_BYTES = 16'd512;
+localparam [15:0] APP3_TX_UDP_LENGTH    = APP3_TX_PAYLOAD_BYTES + 16'd8;
+
+// Always accept ingress headers; they update stream destination.
+assign app2_rx_hdr_ready = 1'b1;
 
 always @(posedge clk) begin
     if (rst) begin
-        app3_loop_hdr_pending <= 1'b0;
+        app3_loop_dest_valid  <= 1'b0;
         app3_loop_ip_dst      <= 32'd0;
         app3_loop_udp_dst     <= 16'd0;
-        app3_loop_len         <= 16'd0;
     end else begin
         if (app2_rx_hdr_valid && app2_rx_hdr_ready) begin
-            app3_loop_hdr_pending <= 1'b1;
+            app3_loop_dest_valid  <= 1'b1;
             app3_loop_ip_dst      <= app2_rx_ip_src;
             app3_loop_udp_dst     <= app2_rx_udp_src_port;
-            app3_loop_len         <= app2_rx_length;
-        end
-
-        if (app3_tx_hdr_valid && app3_tx_hdr_ready) begin
-            app3_loop_hdr_pending <= 1'b0;
         end
     end
 end
 
-assign app3_tx_hdr_valid    = app3_loop_hdr_pending & s_axis_rpi_tx_tvalid;
+assign app3_tx_hdr_valid    = app3_loop_dest_valid & s_axis_rpi_tx_tvalid;
 assign app3_tx_ip_dst       = app3_loop_ip_dst;
 assign app3_tx_ip_src       = local_ip;
 assign app3_tx_udp_dst_port = app3_loop_udp_dst;
 assign app3_tx_udp_src_port = 16'd30000;
-assign app3_tx_length       = app3_loop_len;
+assign app3_tx_length       = APP3_TX_UDP_LENGTH;
 
 assign app3_tx_tdata        = s_axis_rpi_tx_tdata;
 assign app3_tx_tvalid       = s_axis_rpi_tx_tvalid;
