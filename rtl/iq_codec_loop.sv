@@ -38,7 +38,7 @@ reg         tone_mode_dac1_ff2;
 // PINC FFs are posedge so they feed the posedge-sampled DDS s_axis_phase_tdata with full-cycle setup.
 reg [31:0]  tone_pinc_dac1_ff1;
 reg [31:0]  tone_pinc_dac1_ff2;
-reg [15:0]  tone_pinc_dac1_stable;
+reg [23:0]  tone_pinc_dac1_stable;
 // Reset synchronizer: bring i_rst (125 MHz domain) safely into i_dac1_clk (500 MHz) domain.
 reg         dac1_rst_sync1;
 reg         dac1_rst_sync2;
@@ -385,7 +385,7 @@ always @(negedge i_dac1_clk) begin
         tone_mode_dac1_ff2 <= tone_mode_dac1_ff1;
         // Accept a new increment only after two consecutive DAC-domain samples agree.
         if (tone_pinc_dac1_ff1 == tone_pinc_dac1_ff2) begin
-            tone_pinc_dac1_stable <= tone_pinc_dac1_ff2[15:0];
+            tone_pinc_dac1_stable <= tone_pinc_dac1_ff2[23:0];
         end
     end
 

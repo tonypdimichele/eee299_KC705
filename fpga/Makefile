@@ -28,6 +28,7 @@ SYN_FILES += rtl/adc_spi_master.v
 SYN_FILES += rtl/adc_spi_config.v
 SYN_FILES += rtl/adc_lut_config.v
 SYN_FILES += rtl/afifo_wrapper.sv
+SYN_FILES += rtl/adc_stats.sv
 SYN_FILES += lib/iddr.v
 SYN_FILES += lib/oddr.v
 SYN_FILES += lib/ssio_ddr_in.v

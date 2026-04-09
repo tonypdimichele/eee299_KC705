@@ -2,7 +2,7 @@
 `default_nettype none
 
 module afifo_wrapper #(
-
+   parameter READ_DATA_WIDTH = 16
 ) (
     input  wire                   i_r_clk,
     input  wire                   i_w_clk,
@@ -11,7 +11,7 @@ module afifo_wrapper #(
     input  wire [7:0]             i_w_data,
     input  wire                   i_w_valid,
     input  wire                   i_r_ready,
-    output wire [15:0]             o_r_data,
+   output wire [READ_DATA_WIDTH-1:0] o_r_data,
     output wire                   o_data_valid,
     output wire                   o_w_almost_full
 );
@@ -26,7 +26,7 @@ module afifo_wrapper #(
 wire empty;
 wire full;
 wire almost_full;
-wire [15:0] read_data;
+wire [READ_DATA_WIDTH-1:0] read_data;
 wire rd_rst_busy;
 wire rd_en;
 xpm_fifo_async #(
@@ -40,7 +40,7 @@ xpm_fifo_async #(
    .PROG_EMPTY_THRESH(10),    // DECIMAL
    .PROG_FULL_THRESH(10),     // DECIMAL
    .RD_DATA_COUNT_WIDTH(1),   // DECIMAL
-   .READ_DATA_WIDTH(16),      // DECIMAL
+   .READ_DATA_WIDTH(READ_DATA_WIDTH), // DECIMAL
    .READ_MODE("std"),         // String
    .RELATED_CLOCKS(0),        // DECIMAL
    .SIM_ASSERT_CHK(0),        // DECIMAL; 0=disable simulation messages, 1=enable simulation messages
@@ -124,8 +124,9 @@ xpm_fifo_async_inst (
 
 assign rd_en = i_r_ready && !empty && !rd_rst_busy;
 
+//logic rd_en_d;
+logic [READ_DATA_WIDTH-1:0] r_data;
 logic rd_en_d;
-logic [15:0] r_data;
 logic r_valid;
 
 always_ff @(posedge i_r_clk) begin

@@ -747,66 +747,72 @@ adc_top adc_top_inst (
 	.adc1_data_b_d0(adc1_data_b_d0)
 );
 
-reg [1:0]  adc_iq_decim_cnt;
-reg [31:0] adc_tx_shift;
-reg [2:0]  adc_tx_bytes_pending;
-reg [31:0] adc_drop_count;
-(* mark_debug = "true" *) reg [7:0]  adc_fifo_w_data;
-(* mark_debug = "true" *) reg        adc_fifo_w_valid;
-(* mark_debug = "true" *) wire       adc_fifo_w_almost_full;
-(* mark_debug = "true" *) wire [15:0] adc_fifo_r_data;
-(* mark_debug = "true" *) wire       adc_fifo_r_valid;
-(* mark_debug = "true" *) wire       adc_fifo_r_ready;
-(* mark_debug = "true" *) reg [15:0] adc_fifo_word_hold;
-(* mark_debug = "true" *) reg        adc_fifo_word_valid;
-(* mark_debug = "true" *) reg        adc_fifo_word_low_byte;
+// ADC Statistics Module
+// Computes peak+/-, phase, and frequency from IDDR outputs
+// Outputs packetized stats at periodic intervals
+wire [7:0] adc_stats_tdata;
+wire       adc_stats_tvalid;
+wire       adc_stats_tready;
+
+adc_stats #(
+    .WINDOW_SIZE(64),
+    .OVERLAP_PERCENT(80)
+) adc_stats_inst (
+    .clk(adc1_clk),
+    .rst(adc1_rst_int),
+    .adc1_data_a_d0(adc1_data_a_d0),
+    .adc1_data_b_d0(adc1_data_b_d0),
+    .m_axis_tdata(adc_stats_tdata),
+    .m_axis_tvalid(adc_stats_tvalid),
+    .m_axis_tready(adc_stats_tready)
+);
+
+// FIFO to cross clock domain (adc1_clk -> clk_int)
+(* mark_debug = "true" *) wire [7:0]  adc_fifo_w_data;
+(* mark_debug = "true" *) wire        adc_fifo_w_valid;
+(* mark_debug = "true" *) wire        adc_fifo_w_almost_full;
+(* mark_debug = "true" *) wire [7:0] adc_fifo_r_data;
+(* mark_debug = "true" *) wire        adc_fifo_r_valid;
+(* mark_debug = "true" *) wire        adc_fifo_r_ready;
+(* mark_debug = "true" *) reg [2:0]  adc_dbg_byte_idx;
 (* mark_debug = "true" *) reg [10:0] adc_rx_frame_byte_count;
 (* mark_debug = "true" *) wire       adc_rx_axis_hs;
 (* mark_debug = "true" *) wire       adc_rx_axis_last_beat;
 
 localparam [10:0] ADC_RX_FRAME_BYTES = 11'd512;
-localparam [1:0]  ADC_IQ_DECIM = 2'd3; // Emit one I/Q pair every 4 adc1_clk cycles
+localparam DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE = 1'b0;
+
+reg [7:0] adc_fifo_w_data_dbg;
+
+always @(*) begin
+    case (adc_dbg_byte_idx)
+        3'd0: adc_fifo_w_data_dbg = 8'hA7;
+        3'd1: adc_fifo_w_data_dbg = 8'hA5;
+        3'd2: adc_fifo_w_data_dbg = 8'h1F;
+        3'd3: adc_fifo_w_data_dbg = 8'hA5;
+        3'd4: adc_fifo_w_data_dbg = 8'h1F;
+        3'd5: adc_fifo_w_data_dbg = 8'hA5;
+        3'd6: adc_fifo_w_data_dbg = 8'h1F;
+        default: adc_fifo_w_data_dbg = 8'hA5;
+    endcase
+end
 
 always @(posedge adc1_clk) begin
     if (adc1_rst_int) begin
-        adc_iq_decim_cnt <= 2'd0;
-        adc_tx_shift <= 32'd0;
-        adc_tx_bytes_pending <= 3'd0;
-        adc_drop_count <= 32'd0;
-        adc_fifo_w_data <= 8'd0;
-        adc_fifo_w_valid <= 1'b0;
-    end else begin
-        adc_fifo_w_valid <= 1'b0;
-
-        if (adc_iq_decim_cnt == ADC_IQ_DECIM) begin
-            adc_iq_decim_cnt <= 2'd0;
-            if (adc_tx_bytes_pending == 3'd0) begin
-                // Pack interleaved IQ from IDDR outputs:
-                // I(cos): adc1_data_a_d0, Q(sin): adc1_data_b_d0
-                adc_tx_shift <= {
-                    {4'h0, adc1_data_a_d0[11:8]},
-                    adc1_data_a_d0[7:0],
-                    {4'h0, adc1_data_b_d0[11:8]},
-                    adc1_data_b_d0[7:0]
-                };
-                adc_tx_bytes_pending <= 3'd4;
-            end else begin
-                adc_drop_count <= adc_drop_count + 1'b1;
-            end
-        end else begin
-            adc_iq_decim_cnt <= adc_iq_decim_cnt + 1'b1;
-        end
-
-        if ((adc_tx_bytes_pending != 3'd0) && !adc_fifo_w_almost_full) begin
-            adc_fifo_w_valid <= 1'b1;
-            adc_fifo_w_data <= adc_tx_shift[31:24];
-            adc_tx_shift <= {adc_tx_shift[23:0], 8'h00};
-            adc_tx_bytes_pending <= adc_tx_bytes_pending - 1'b1;
-        end
+        adc_dbg_byte_idx <= 3'd0;
+    end else if (DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE && !adc_fifo_w_almost_full) begin
+        adc_dbg_byte_idx <= adc_dbg_byte_idx + 1'b1;
     end
 end
 
-afifo_wrapper adc_to_eth_afifo_inst (
+// Wire adc_stats output directly to FIFO write port
+assign adc_fifo_w_data = DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE ? adc_fifo_w_data_dbg : adc_stats_tdata;
+assign adc_fifo_w_valid = DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE ? !adc_fifo_w_almost_full : adc_stats_tvalid;
+assign adc_stats_tready = DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE ? 1'b0 : !adc_fifo_w_almost_full;
+
+afifo_wrapper #(
+    .READ_DATA_WIDTH(8)
+) adc_to_eth_afifo_inst (
     .i_r_clk(clk_int),
     .i_w_clk(adc1_clk),
     .i_w_rst(adc1_rst_int),
@@ -820,26 +826,8 @@ afifo_wrapper adc_to_eth_afifo_inst (
 
 always @(posedge clk_int) begin
     if (rst_int) begin
-        adc_fifo_word_hold <= 16'd0;
-        adc_fifo_word_valid <= 1'b0;
-        adc_fifo_word_low_byte <= 1'b0;
         adc_rx_frame_byte_count <= 11'd0;
     end else begin
-        if (!adc_fifo_word_valid && adc_fifo_r_valid) begin
-            adc_fifo_word_hold <= adc_fifo_r_data;
-            adc_fifo_word_valid <= 1'b1;
-            adc_fifo_word_low_byte <= 1'b0;
-        end
-
-        if (adc_fifo_word_valid && adc_rx_axis_tready) begin
-            if (!adc_fifo_word_low_byte) begin
-                adc_fifo_word_low_byte <= 1'b1;
-            end else begin
-                adc_fifo_word_low_byte <= 1'b0;
-                adc_fifo_word_valid <= 1'b0;
-            end
-        end
-
         if (adc_rx_axis_hs) begin
             if (adc_rx_axis_last_beat) begin
                 adc_rx_frame_byte_count <= 11'd0;
@@ -850,9 +838,9 @@ always @(posedge clk_int) begin
     end
 end
 
-assign adc_fifo_r_ready = !adc_fifo_word_valid;
-assign adc_rx_axis_tdata = adc_fifo_word_low_byte ? adc_fifo_word_hold[7:0] : adc_fifo_word_hold[15:8];
-assign adc_rx_axis_tvalid = adc_fifo_word_valid;
+assign adc_fifo_r_ready = adc_rx_axis_tready;
+assign adc_rx_axis_tdata = adc_fifo_r_data;
+assign adc_rx_axis_tvalid = adc_fifo_r_valid;
 assign adc_rx_axis_hs = adc_rx_axis_tvalid && adc_rx_axis_tready;
 assign adc_rx_axis_last_beat = (adc_rx_frame_byte_count == ADC_RX_FRAME_BYTES-1);
 assign adc_rx_axis_tlast = adc_rx_axis_last_beat;
