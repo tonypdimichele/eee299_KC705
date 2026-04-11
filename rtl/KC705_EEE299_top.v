@@ -754,10 +754,7 @@ wire [7:0] adc_stats_tdata;
 wire       adc_stats_tvalid;
 wire       adc_stats_tready;
 
-adc_stats #(
-    .WINDOW_SIZE(64),
-    .OVERLAP_PERCENT(80)
-) adc_stats_inst (
+adc_stats adc_stats_inst (
     .clk(adc1_clk),
     .rst(adc1_rst_int),
     .adc1_data_a_d0(adc1_data_a_d0),
@@ -848,7 +845,7 @@ assign adc_rx_axis_tlast = adc_rx_axis_last_beat;
 
 
 reg [7:0] dac1_clk_divide;
-always @(posedge dac1_dco_buf) begin
+always @(posedge adc1_clk) begin
     dac1_clk_divide <= dac1_clk_divide + 1'b1;
     if (dac1_clk_divide == 8'd99) begin
         helpme <= ~helpme;

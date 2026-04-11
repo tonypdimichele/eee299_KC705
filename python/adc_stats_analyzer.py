@@ -7,18 +7,19 @@ FPGA computes:
     - Phase from sine (Q) channel
 Analyzer receives and displays those stats.
 
-Stat Packet Format (8 bytes per stat):
+Stat Packet Format (12 bytes per stat):
     [0]: sync byte (0xA7)
     [1]: peak_pos[11:4]
     [2]: peak_pos[3:0] || peak_neg[11:8]
     [3]: peak_neg[7:0]
-    [4]: phase[15:8]
-    [5]: phase[7:0]
-    [6]: period[15:8]   (samples between + zero crossings)
-    [7]: period[7:0]
+    [4:7]: iq_delay_sum (unsigned 32-bit, clocks from I ZC to Q ZC, summed over N)
+    [8]: freq_raw_clk_count[15:8]  (clk count over adaptive N crossings)
+    [9]: freq_raw_clk_count[7:0]
+    [10]: n_cycles[15:8]
+    [11]: n_cycles[7:0]
 
 Usage:
-    python3 python/adc_stats_analyzer.py --bind-port 40000 --tone-freq-mhz 5.01 --fpga-ip 192.168.1.128 --cal-vpp 1.04 --cal-peak-code 2267 --cal-trough-code 1840 --duration-sec 1
+    python3 python/adc_stats_analyzer.py --bind-port 40000 --fpga-ip 192.168.1.128 --duration-sec 1
 
 Optional CSV output for recording while analyzing:
   --csv-output adc_stats.csv --duration-sec 1
@@ -27,12 +28,12 @@ Optional CSV output for recording while analyzing:
 import argparse
 import csv
 import curses
-import numpy as np
+import math
 import pathlib
 import socket
+import statistics
 import sys
 import time
-from collections import deque
 from typing import Optional
 
 
@@ -40,22 +41,20 @@ class ADCStatsAnalyzer:
     """Real-time analyzer for FPGA-computed ADC statistics."""
 
     SYNC_BYTE = 0xA7
-    FRAME_LEN = 8
-    PAYLOAD_LEN = 7
+    FRAME_LEN = 12
+    PAYLOAD_LEN = 11
     MAX_SYNC_LOOKAHEAD_FRAMES = 4
+    MIN_N_CYCLES = 4
+    MAX_N_CYCLES = 30000
 
     def __init__(
         self,
         bind_ip: str,
         bind_port: int,
-        tone_freq_mhz: float,
         phase_reference_deg: float = 0.0,
         fpga_ip: str = "192.168.1.128",
         prime_port: int = 20000,
         no_prime: bool = False,
-        cal_vpp: Optional[float] = None,
-        cal_peak_code: Optional[float] = None,
-        cal_trough_code: Optional[float] = None,
         sample_rate_msps: float = 125.0,
         ui_refresh_sec: float = 1.5,
         debug_stats: bool = False,
@@ -65,24 +64,20 @@ class ADCStatsAnalyzer:
     ):
         self.bind_ip = bind_ip
         self.bind_port = bind_port
-        self.tone_freq_mhz = tone_freq_mhz
         self.phase_reference_deg = phase_reference_deg
         self.fpga_ip = fpga_ip
         self.prime_port = prime_port
         self.no_prime = no_prime
         self.recv_size = recv_size
         self.timeout = timeout
+        self.volts_center_code = 2048.0
+        self.volts_per_code = 1.0 / 2048.0  # Default offset-binary scale
 
-        # Voltage calibration
-        self.cal_vpp = cal_vpp
-        self.cal_peak_code = cal_peak_code
-        self.cal_trough_code = cal_trough_code
         self.sample_rate_msps = float(sample_rate_msps)
         self.ui_refresh_sec = max(0.1, float(ui_refresh_sec))
         self.debug_stats = debug_stats
-        self.volts_center_code = 2048.0
-        self.volts_per_code = 1.0 / 2048.0  # Default VREF = 1.0 V
-        self._configure_voltage_scaling()
+        self.max_valid_freq_mhz = 0.5 * self.sample_rate_msps
+        self.min_valid_period_clks = 2.0
 
         # CSV output
         self.csv_output = csv_output
@@ -91,7 +86,19 @@ class ADCStatsAnalyzer:
             self.csv_file = open(csv_output, "w", newline="", encoding="utf-8")
             self.csv_writer = csv.writer(self.csv_file)
             self.csv_writer.writerow(
-                ["host_time_iso", "stat_index", "peak_pos_code", "peak_neg_code", "phase_deg", "freq_mhz"]
+                [
+                    "host_time_iso",
+                    "report_index",
+                    "stats_processed",
+                    "peak_pos_code",
+                    "peak_neg_code",
+                    "peak_pos_volts",
+                    "peak_neg_volts",
+                    "phase_deg",
+                    "n_cycles",
+                    "freq_hz",
+                    "freq_mhz",
+                ]
             )
         else:
             self.csv_file = None
@@ -106,12 +113,15 @@ class ADCStatsAnalyzer:
         if not self.no_prime:
             self._prime_fpga_egress()
 
-        # Rolling window of stats
-        self.window_size = 100
-        self.peak_pos_codes = deque(maxlen=self.window_size)
-        self.peak_neg_codes = deque(maxlen=self.window_size)
-        self.phases_deg = deque(maxlen=self.window_size)
-        self.freqs_mhz = deque(maxlen=self.window_size)
+        # Batch averaging: update reported metrics only once per full batch.
+        self.batch_size = 20
+        self.batch_peak_pos_codes = []
+        self.batch_peak_neg_codes = []
+        self.batch_phases_deg = []
+        self.batch_n_cycles = []
+        self.batch_freqs_mhz = []
+        self.latest_metrics = None
+        self.reports_generated = 0
 
         # Tracking
         self.last_update_time = time.time()
@@ -120,30 +130,29 @@ class ADCStatsAnalyzer:
         self.bytes_received = 0
         self.stat_buffer = bytearray()
         self.frames_rejected = 0
+        self.invalid_freq_stats = 0
+        self.stream_mismatch_warned = False
 
         print(f"Analyzer config:")
         print(f"  Listen: {bind_ip}:{bind_port}")
-        print(f"  Tone freq: {tone_freq_mhz} MHz")
         print(f"  ADC sample rate: {self.sample_rate_msps:.3f} MSPS")
-        print("  Frequency: period-based (samples between zero crossings)")
+        print("  Frequency: raw clk count with transmitted N (from FPGA packet)")
+        print(
+            f"  Voltage scale: center={self.volts_center_code:.1f} code, "
+            f"{self.volts_per_code:.9f} V/code"
+        )
+        print(f"  Report cadence: one averaged update per {self.batch_size} stats")
         print("  Channel mapping: peak/freq=cos(I), phase=sin(Q)")
         print(f"  Phase reference: {phase_reference_deg}°")
         print(
             f"  Prime: {'disabled' if self.no_prime else f'enabled -> {self.fpga_ip}:{self.prime_port}'}"
         )
-        if self.cal_vpp is not None:
-            print(
-                f"  Voltage calibration: "
-                f"{self.cal_vpp:.6f} Vpp from codes {self.cal_peak_code:.3f}/{self.cal_trough_code:.3f}"
-            )
-            print(
-                f"  Cal center code: {self.volts_center_code:.3f} | "
-                f"scale: {self.volts_per_code:.9f} V/code"
-            )
         if csv_output:
             print(f"  CSV output: {csv_output}")
         print(f"  UI refresh: {self.ui_refresh_sec:.1f} s")
         print(f"  Debug stats: {'on' if self.debug_stats else 'off'}")
+        print(f"  Expected N range: [{self.MIN_N_CYCLES}, {self.MAX_N_CYCLES}]")
+        print(f"  Max accepted frequency: {self.max_valid_freq_mhz:.3f} MHz")
         print(f"  Display: terminal UI (curses)")
 
     def _prime_fpga_egress(self) -> None:
@@ -155,24 +164,61 @@ class ADCStatsAnalyzer:
         except Exception as exc:
             print(f"WARNING: prime packet send failed: {exc}")
 
-    def _configure_voltage_scaling(self) -> None:
-        """Configure volts-per-code conversion from measured calibration."""
-        if self.cal_vpp is None:
-            return
+    def code_to_volts(self, code: float) -> float:
+        """Convert offset-binary ADC code to volts using default scaling."""
+        return (code - self.volts_center_code) * self.volts_per_code * 5 #keep as ADC divides 1/5
 
-        if self.cal_peak_code is None or self.cal_trough_code is None:
-            raise ValueError("Voltage calibration requires both cal_peak_code and cal_trough_code")
+    def _finalize_batch_metrics(self) -> None:
+        """Finalize one report from 20 decoded stats and reset batch accumulators."""
+        peak_pos_avg = float(statistics.fmean(self.batch_peak_pos_codes))
+        peak_neg_avg = float(statistics.fmean(self.batch_peak_neg_codes))
+        peak_pp_avg = peak_pos_avg - peak_neg_avg
+        phase_avg = float(statistics.fmean(self.batch_phases_deg))
+        n_cycles_avg = float(statistics.fmean(self.batch_n_cycles))
+        freq_avg = float(statistics.fmean(self.batch_freqs_mhz))
+        freq_hz = freq_avg * 1_000_000.0
 
-        code_span = float(self.cal_peak_code) - float(self.cal_trough_code)
-        if abs(code_span) < 1e-12:
-            raise ValueError("Voltage calibration code span must be non-zero")
+        peak_pos_volts = self.code_to_volts(peak_pos_avg)
+        peak_neg_volts = self.code_to_volts(peak_neg_avg)
+        peak_pp_volts = peak_pos_volts - peak_neg_volts
 
-        self.volts_center_code = (float(self.cal_peak_code) + float(self.cal_trough_code)) / 2.0
-        self.volts_per_code = float(self.cal_vpp) / code_span
+        self.latest_metrics = {
+            "peak_pos_code": peak_pos_avg,
+            "peak_neg_code": peak_neg_avg,
+            "peak_pp_code": peak_pp_avg,
+            "peak_pos_volts": peak_pos_volts,
+            "peak_neg_volts": peak_neg_volts,
+            "peak_pp_volts": peak_pp_volts,
+            "phase_deg": phase_avg,
+            "n_cycles": n_cycles_avg,
+            "freq_mhz": freq_avg,
+            "freq_hz": freq_hz,
+        }
 
-    def code_to_volts(self, code: int) -> float:
-        """Convert ADC code to volts using calibration or default VREF."""
-        return (code - self.volts_center_code) * self.volts_per_code
+        if self.csv_writer:
+            ts = time.time()
+            self.csv_writer.writerow(
+                [
+                    time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts)),
+                    self.reports_generated + 1,
+                    self.total_stats_read,
+                    f"{peak_pos_avg:.3f}",
+                    f"{peak_neg_avg:.3f}",
+                    f"{peak_pos_volts:.6f}",
+                    f"{peak_neg_volts:.6f}",
+                    f"{phase_avg:.3f}",
+                    f"{n_cycles_avg:.3f}",
+                    f"{freq_hz:.3f}",
+                    f"{freq_avg:.6f}",
+                ]
+            )
+
+        self.reports_generated += 1
+        self.batch_peak_pos_codes.clear()
+        self.batch_peak_neg_codes.clear()
+        self.batch_phases_deg.clear()
+        self.batch_n_cycles.clear()
+        self.batch_freqs_mhz.clear()
 
     def read_udp_chunk(self) -> int:
         """Read UDP packet, decode stats, return count of new stats."""
@@ -188,9 +234,9 @@ class ADCStatsAnalyzer:
         # Accumulate bytes into buffer
         self.stat_buffer.extend(payload)
 
-        # Parse framed packets: [sync][7-byte payload].
+        # Parse framed packets: [sync][9-byte payload].
         # Validate lock by requiring another sync at a frame boundary.
-        # The next sync may be +8, +16, ... if frames are dropped upstream.
+        # The next sync may be +10, +20, ... if frames are dropped upstream.
         while True:
             if len(self.stat_buffer) < self.FRAME_LEN:
                 break
@@ -233,6 +279,7 @@ class ADCStatsAnalyzer:
             peak_neg_code = self._decode_peak_neg(stat_bytes) #* (2/4096)) - 1) * 5
             phase_raw = self._decode_phase(stat_bytes)
             freq_raw = self._decode_freq(stat_bytes)
+            n_cycles = self._decode_n_cycles(stat_bytes)
 
             # Transport should carry offset-binary peaks with pos >= neg; auto-correct if inverted.
             if peak_pos_code < peak_neg_code:
@@ -243,38 +290,80 @@ class ADCStatsAnalyzer:
                 print(
                     f"DEBUG stat {self.total_stats_read}: frame={self.SYNC_BYTE:02x} "
                     f"{' '.join(f'{b:02x}' for b in stat_bytes)} "
-                    f"peak_pos={peak_pos_code} peak_neg={peak_neg_code} phase_raw={phase_raw} freq_raw={freq_raw} "
+                    f"peak_pos={peak_pos_code} peak_neg={peak_neg_code} phase_raw={phase_raw} "
+                    f"freq_raw={freq_raw} n_cycles={n_cycles} "
                     f"rejected={self.frames_rejected}"
                 )
 
-            # Convert to degrees and MHz
-            phase_deg = (phase_raw / 65536.0) * 360.0 - self.phase_reference_deg
-            # freq_raw is now period in samples between positive-going zero crossings
-            if freq_raw > 0 and freq_raw < 0xFFFF:
-                freq_mhz = self.sample_rate_msps / freq_raw
+            # Guard against stream-format mismatch (e.g., 8-byte FPGA stream with 10-byte parser).
+            # A common signature is n_cycles high byte equals SYNC (0xA7xx), which is not valid N.
+            if n_cycles < self.MIN_N_CYCLES or n_cycles > self.MAX_N_CYCLES:
+                self.invalid_freq_stats += 1
+                if (not self.stream_mismatch_warned) and ((n_cycles >> 8) & 0xFF) == self.SYNC_BYTE:
+                    print(
+                        "WARNING: Detected invalid n_cycles with sync-byte signature (0xA7xx). "
+                        "This usually means Python expects 10-byte stats but FPGA is still sending 8-byte stats."
+                    )
+                    self.stream_mismatch_warned = True
+                continue
+
+            # Compute frequency first (needed for phase normalization)
+            if freq_raw > 0 and n_cycles > 0:
+                freq_mhz = (self.sample_rate_msps * n_cycles) / float(freq_raw)
             else:
                 freq_mhz = 0.0
 
-            self.peak_pos_codes.append(peak_pos_code)
-            self.peak_neg_codes.append(peak_neg_code)
-            self.phases_deg.append(phase_deg)
-            self.freqs_mhz.append(freq_mhz)
+            # Phase from I-to-Q zero-crossing delay (time-domain, no amplitude dependence)
+            # phase_raw = sum of I-to-Q delays in clocks over N cycles
+            # phase_deg = 360 * delay_sum / total_clks (N cancels)
+            if freq_raw > 0:
+                phase_deg = 360.0 * phase_raw / float(freq_raw) - self.phase_reference_deg
+                # Normalize to [-180, 180]
+                phase_deg = (phase_deg + 180.0) % 360.0 - 180.0
+            else:
+                phase_deg = 0.0
 
-            # Optional CSV output
-            if self.csv_writer:
-                ts = time.time()
-                self.csv_writer.writerow(
-                    [
-                        time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts)),
-                        self.total_stats_read,
-                        peak_pos_code,
-                        peak_neg_code,
-                        f"{phase_deg:.2f}",
-                        f"{freq_mhz:.3f}",
-                    ]
-                )
+            # Physical consistency check:
+            # period_clks = raw_clk_count / n_cycles should be >= ~2 near Nyquist.
+            period_clks = (float(freq_raw) / float(n_cycles)) if n_cycles > 0 else 0.0
+
+            if (
+                ((n_cycles >> 8) & 0xFF) == self.SYNC_BYTE
+                or n_cycles < self.MIN_N_CYCLES
+                or n_cycles > self.MAX_N_CYCLES
+                or freq_mhz <= 0.0
+                or freq_mhz > self.max_valid_freq_mhz
+                or period_clks < self.min_valid_period_clks
+            ):
+                self.invalid_freq_stats += 1
+                if (not self.stream_mismatch_warned) and ((n_cycles >> 8) & 0xFF) == self.SYNC_BYTE:
+                    print(
+                        "WARNING: Detected invalid n_cycles with sync-byte signature (0xA7xx). "
+                        "This usually means Python expects 10-byte stats but FPGA is still sending 8-byte stats."
+                    )
+                    self.stream_mismatch_warned = True
+                if self.debug_stats and (
+                    self.invalid_freq_stats <= 10 or (self.invalid_freq_stats % 100) == 0
+                ):
+                    print(
+                        f"DEBUG invalid stat {self.total_stats_read}: "
+                        f"freq_raw={freq_raw} n_cycles={n_cycles} "
+                        f"period_clks={period_clks:.3f} freq_mhz={freq_mhz:.3f} "
+                        f"invalid_total={self.invalid_freq_stats}"
+                    )
+                continue
+
+            self.batch_peak_pos_codes.append(peak_pos_code)
+            self.batch_peak_neg_codes.append(peak_neg_code)
+            self.batch_phases_deg.append(phase_deg)
+            self.batch_n_cycles.append(n_cycles)
+            self.batch_freqs_mhz.append(freq_mhz)
 
             self.total_stats_read += 1
+
+            if len(self.batch_peak_pos_codes) >= self.batch_size:
+                self._finalize_batch_metrics()
+
             count += 1
 
         return count
@@ -304,54 +393,29 @@ class ADCStatsAnalyzer:
 
     @staticmethod
     def _decode_phase(stat_bytes: bytearray) -> int:
-        """Decode phase from bytes [3:5]."""
-        return (stat_bytes[3] << 8) | stat_bytes[4]  # 16-bit
+        """Decode IQ delay sum from bytes [3:7] as unsigned 32-bit."""
+        return (stat_bytes[3] << 24) | (stat_bytes[4] << 16) | (stat_bytes[5] << 8) | stat_bytes[6]
 
     @staticmethod
     def _decode_freq(stat_bytes: bytearray) -> int:
-        """Decode frequency from bytes [5:7]."""
-        return (stat_bytes[5] << 8) | stat_bytes[6]  # 16-bit
+        """Decode frequency from bytes [7:9]."""
+        return (stat_bytes[7] << 8) | stat_bytes[8]  # 16-bit
+
+    @staticmethod
+    def _decode_n_cycles(stat_bytes: bytearray) -> int:
+        """Decode N (cycle count used) from bytes [9:11]."""
+        return (stat_bytes[9] << 8) | stat_bytes[10]  # 16-bit
 
     def compute_metrics(self) -> dict:
-        """Compute summary metrics from current window."""
-        if len(self.peak_pos_codes) < 5:
-            return {"error": "Insufficient stats"}
-
-        peak_pos_arr = np.array(list(self.peak_pos_codes))
-        peak_neg_arr = np.array(list(self.peak_neg_codes))
-        phase_arr = np.array(list(self.phases_deg))
-        freq_arr = np.array(list(self.freqs_mhz))
-
-        # Summary metrics
-        peak_pos_avg = np.mean(peak_pos_arr)
-        peak_neg_avg = np.mean(peak_neg_arr)
-        peak_pp_avg = peak_pos_avg - peak_neg_avg
-
-        phase_avg = np.mean(phase_arr)
-        phase_std = np.std(phase_arr)
-
-        freq_avg = np.mean(freq_arr)
-        freq_std = np.std(freq_arr)
-        freq_error_khz = (freq_avg - self.tone_freq_mhz) * 1000.0
-
-        # Convert codes to volts
-        peak_pos_volts = self.code_to_volts(int(peak_pos_avg))
-        peak_neg_volts = self.code_to_volts(int(peak_neg_avg))
-        peak_pp_volts = peak_pos_volts - peak_neg_volts
-
-        return {
-            "peak_pos_code": peak_pos_avg,
-            "peak_neg_code": peak_neg_avg,
-            "peak_pp_code": peak_pp_avg,
-            "peak_pos_volts": peak_pos_volts,
-            "peak_neg_volts": peak_neg_volts,
-            "peak_pp_volts": peak_pp_volts,
-            "phase_deg": phase_avg,
-            "phase_std_deg": phase_std,
-            "freq_mhz": freq_avg,
-            "freq_std_mhz": freq_std,
-            "freq_error_khz": freq_error_khz,
-        }
+        """Return most recent 20-sample batch report."""
+        if self.latest_metrics is None:
+            return {
+                "error": (
+                    f"Collecting initial batch: "
+                    f"{len(self.batch_peak_pos_codes)}/{self.batch_size} stats"
+                )
+            }
+        return self.latest_metrics
 
     def print_metrics(self, metrics: dict) -> None:
         """Print metrics to console."""
@@ -365,74 +429,89 @@ class ADCStatsAnalyzer:
             f"Packets: {self.packets_received} | Bytes: {self.bytes_received:,}"
             f"\n{'='*70}"
         )
+        print(f"Batch averaging: {self.batch_size} stats/report | Reports: {self.reports_generated}")
         print(
             f"FPGA-Computed Statistics:\n"
-            f"  Peak (+) cos(I):  Code {metrics['peak_pos_code']:.1f} = {metrics['peak_pos_volts']:.6f} V\n"
-            f"  Peak (-) cos(I):  Code {metrics['peak_neg_code']:.1f} = {metrics['peak_neg_volts']:.6f} V\n"
-            f"  Peak-to-Peak I:   Code {metrics['peak_pp_code']:.1f} = {metrics['peak_pp_volts']:.6f} V\n"
+            f"  Peak (+) cos(I):  {metrics['peak_pos_volts']:.4f} V "
+            f"(code {metrics['peak_pos_code']:.1f})\n"
+            f"  Peak (-) cos(I):  {metrics['peak_neg_volts']:.4f} V "
+            f"(code {metrics['peak_neg_code']:.1f})\n"
+            f"  Peak-to-Peak I:   {metrics['peak_pp_volts']:.4f} V "
+            f"(code {metrics['peak_pp_code']:.1f})\n"
         )
         print(
             f"Phase & Frequency:\n"
-            f"  Phase (sin Q):    {metrics['phase_deg']:.2f}° (std: {metrics['phase_std_deg']:.2f}°)\n"
-            f"  Frequency:        {metrics['freq_mhz']:.3f} MHz (error: {metrics['freq_error_khz']:.1f} kHz)\n"
-            f"  Freq std:         {metrics['freq_std_mhz']:.3f} MHz"
+            f"  Phase (sin Q):    {metrics['phase_deg']:.2f}°\n"
+            f"  N cycles:         {metrics['n_cycles']:.1f}\n"
+            f"  Frequency:        {metrics['freq_mhz']:.4f} MHz"
         )
 
     def print_metrics_curses(self, stdscr, metrics: dict) -> None:
         """Update screen with curses (like 'top' command)."""
-        stdscr.clear()
-
         try:
             row = 0
 
             if "error" in metrics:
                 stdscr.addstr(row, 0, f"[Warming up...] {metrics['error']}")
+                stdscr.clrtoeol()
                 row += 1
             else:
-                line = f"{'='*70}"
-                stdscr.addstr(row, 0, line[:70] if len(line) > 70 else line)
+                stdscr.addstr(row, 0, f"{'='*70}")
+                stdscr.clrtoeol()
                 row += 1
 
-                line = f"ADC Stats | Stats: {self.total_stats_read:,} | Packets: {self.packets_received} | Bytes: {self.bytes_received:,}"
-                stdscr.addstr(row, 0, line[:70] if len(line) > 70 else line)
+                stdscr.addstr(row, 0,
+                    f"ADC Stats | Stats: {self.total_stats_read:,} | "
+                    f"Packets: {self.packets_received} | Bytes: {self.bytes_received:,}")
+                stdscr.clrtoeol()
                 row += 1
 
-                line = f"{'='*70}"
-                stdscr.addstr(row, 0, line[:70] if len(line) > 70 else line)
+                stdscr.addstr(row, 0,
+                    f"Batch avg: {self.batch_size} stats/report | Reports: {self.reports_generated}")
+                stdscr.clrtoeol()
+                row += 1
+
+                stdscr.addstr(row, 0, f"{'='*70}")
+                stdscr.clrtoeol()
                 row += 1
 
                 stdscr.addstr(row, 0, "FPGA-Computed Statistics (Cosine I):")
+                stdscr.clrtoeol()
                 row += 1
-                stdscr.addstr(
-                    row,
-                    0,
-                    f"  Peak (+) I:     Code {metrics['peak_pos_code']:.1f} = {metrics['peak_pos_volts']:.6f} V",
-                )
+                stdscr.addstr(row, 0,
+                    f"  Peak (+) I:     {metrics['peak_pos_volts']:.4f} V "
+                    f"(code {metrics['peak_pos_code']:.1f})")
+                stdscr.clrtoeol()
                 row += 1
-                stdscr.addstr(
-                    row,
-                    0,
-                    f"  Peak (-) I:     Code {metrics['peak_neg_code']:.1f} = {metrics['peak_neg_volts']:.6f} V",
-                )
+                stdscr.addstr(row, 0,
+                    f"  Peak (-) I:     {metrics['peak_neg_volts']:.4f} V "
+                    f"(code {metrics['peak_neg_code']:.1f})")
+                stdscr.clrtoeol()
                 row += 1
-                stdscr.addstr(
-                    row,
-                    0,
-                    f"  Peak-to-Peak I: Code {metrics['peak_pp_code']:.1f} = {metrics['peak_pp_volts']:.6f} V",
-                )
+                stdscr.addstr(row, 0,
+                    f"  Peak-to-Peak I: {metrics['peak_pp_volts']:.4f} V "
+                    f"(code {metrics['peak_pp_code']:.1f})")
+                stdscr.clrtoeol()
                 row += 2
 
                 stdscr.addstr(row, 0, "Phase & Frequency:")
+                stdscr.clrtoeol()
                 row += 1
-                stdscr.addstr(row, 0, f"  Phase (sin Q):  {metrics['phase_deg']:.2f}° (std: {metrics['phase_std_deg']:.2f}°)")
+                stdscr.addstr(row, 0, f"  Phase (sin Q):  {metrics['phase_deg']:.2f}\u00b0")
+                stdscr.clrtoeol()
                 row += 1
-                stdscr.addstr(row, 0, f"  Frequency:      {metrics['freq_mhz']:.3f} MHz (err: {metrics['freq_error_khz']:.1f} kHz)")
+                stdscr.addstr(row, 0, f"  N cycles:       {metrics['n_cycles']:.1f}")
+                stdscr.clrtoeol()
                 row += 1
-                stdscr.addstr(row, 0, f"  Freq std:       {metrics['freq_std_mhz']:.3f} MHz")
+                stdscr.addstr(row, 0, f"  Frequency:      {metrics['freq_mhz']:.4f} MHz")
+                stdscr.clrtoeol()
                 row += 2
 
                 stdscr.addstr(row, 0, "Press Ctrl+C to stop")
+                stdscr.clrtoeol()
+                row += 1
 
+            stdscr.clrtobot()
             stdscr.refresh()
         except curses.error:
             pass
@@ -499,12 +578,6 @@ def main() -> int:
         help="Local UDP port to listen on",
     )
     parser.add_argument(
-        "--tone-freq-mhz",
-        type=float,
-        required=True,
-        help="Expected tone frequency in MHz (e.g., 5.01)",
-    )
-    parser.add_argument(
         "--sample-rate-msps",
         type=float,
         default=125.0,
@@ -531,24 +604,6 @@ def main() -> int:
         type=float,
         default=0.0,
         help="Phase reference point in degrees for IQ phase display",
-    )
-    parser.add_argument(
-        "--cal-vpp",
-        type=float,
-        default=None,
-        help="Measured waveform peak-to-peak voltage for calibration",
-    )
-    parser.add_argument(
-        "--cal-peak-code",
-        type=float,
-        default=None,
-        help="Measured ADC code at positive peak for voltage calibration",
-    )
-    parser.add_argument(
-        "--cal-trough-code",
-        type=float,
-        default=None,
-        help="Measured ADC code at negative peak for voltage calibration",
     )
     parser.add_argument(
         "--ui-refresh-sec",
@@ -593,14 +648,10 @@ def main() -> int:
     analyzer = ADCStatsAnalyzer(
         bind_ip=args.bind_ip,
         bind_port=args.bind_port,
-        tone_freq_mhz=args.tone_freq_mhz,
         phase_reference_deg=args.phase_reference_deg,
         fpga_ip=args.fpga_ip,
         prime_port=args.prime_port,
         no_prime=args.no_prime,
-        cal_vpp=args.cal_vpp,
-        cal_peak_code=args.cal_peak_code,
-        cal_trough_code=args.cal_trough_code,
         sample_rate_msps=args.sample_rate_msps,
         ui_refresh_sec=args.ui_refresh_sec,
         debug_stats=args.debug_stats,
