@@ -94,6 +94,7 @@ class ADCStatsAnalyzer:
                     "peak_neg_code",
                     "peak_pos_volts",
                     "peak_neg_volts",
+                    "v2rms_v2",
                     "phase_deg",
                     "n_cycles",
                     "freq_hz",
@@ -181,6 +182,8 @@ class ADCStatsAnalyzer:
         peak_pos_volts = self.code_to_volts(peak_pos_avg)
         peak_neg_volts = self.code_to_volts(peak_neg_avg)
         peak_pp_volts = peak_pos_volts - peak_neg_volts
+        # For a sinusoid, Vrms = Vpp / (2*sqrt(2)); therefore Vrms^2 = Vpp^2 / 8.
+        v2rms_v2 = (peak_pp_volts * peak_pp_volts) / 8.0
 
         self.latest_metrics = {
             "peak_pos_code": peak_pos_avg,
@@ -189,6 +192,7 @@ class ADCStatsAnalyzer:
             "peak_pos_volts": peak_pos_volts,
             "peak_neg_volts": peak_neg_volts,
             "peak_pp_volts": peak_pp_volts,
+            "v2rms_v2": v2rms_v2,
             "phase_deg": phase_avg,
             "n_cycles": n_cycles_avg,
             "freq_mhz": freq_avg,
@@ -206,6 +210,7 @@ class ADCStatsAnalyzer:
                     f"{peak_neg_avg:.3f}",
                     f"{peak_pos_volts:.6f}",
                     f"{peak_neg_volts:.6f}",
+                    f"{v2rms_v2:.9f}",
                     f"{phase_avg:.3f}",
                     f"{n_cycles_avg:.3f}",
                     f"{freq_hz:.3f}",
@@ -438,6 +443,7 @@ class ADCStatsAnalyzer:
             f"(code {metrics['peak_neg_code']:.1f})\n"
             f"  Peak-to-Peak I:   {metrics['peak_pp_volts']:.4f} V "
             f"(code {metrics['peak_pp_code']:.1f})\n"
+            f"  Power (V^2rms; R=1 Ω):     {metrics['v2rms_v2']:.6f} V^2\n"
         )
         print(
             f"Phase & Frequency:\n"
@@ -491,6 +497,11 @@ class ADCStatsAnalyzer:
                 stdscr.addstr(row, 0,
                     f"  Peak-to-Peak I: {metrics['peak_pp_volts']:.4f} V "
                     f"(code {metrics['peak_pp_code']:.1f})")
+                stdscr.clrtoeol()
+                row += 2
+
+                stdscr.addstr(row, 0,
+                    f"  V^2rms (R=1):   {metrics['v2rms_v2']:.6f} V^2")
                 stdscr.clrtoeol()
                 row += 2
 

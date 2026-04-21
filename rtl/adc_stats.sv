@@ -55,7 +55,7 @@ module adc_stats #(
 );
 
     // ---- Constants --------------------------------------------------------
-    localparam signed [11:0] ZC_HYST = 12'sd16;
+    localparam signed [11:0] ZC_HYST = 12'sd4;
 
     // ---- Offset-binary <-> signed (MSB flip) ------------------------------
     wire signed [11:0] sample_i = {~adc1_data_a_d0[11], adc1_data_a_d0[10:0]};
