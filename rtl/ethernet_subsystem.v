@@ -82,6 +82,17 @@ module ethernet_subsystem #
     output wire       uart_rts,
     input  wire       uart_cts,
 
+    output wire       reg_tone_mode,
+    output wire [31:0] o_reg_tone_pinc,
+    output wire [4:0] reg_dac1_delay,
+    output wire [4:0] reg_dac2_delay,
+    output wire       reg_dac_delay_apply_toggle,
+    output wire [7:0] reg_dac_spi_read_addr,
+    output wire       reg_dac_spi_read_toggle,
+    input  wire [7:0] dac_spi_read_data,
+    input  wire       dac_spi_read_busy,
+    input  wire       dac_spi_read_done_toggle,
+
     /*
      * External AXIS stream interface
      *   m_axis_rpi_rx_* : UDP/20000 payload out of subsystem (RPi -> fabric)
@@ -630,7 +641,17 @@ axi_lite_regs u_regs (
     .s_axi_rvalid (rb_RVALID[0]),
     .s_axi_rready (rb_RREADY[0]),
 
-    .reg3_out(regs_led)
+    .reg3_out(regs_led),
+    .reg_tone_pinc(o_reg_tone_pinc),
+    .tone_mode_out(reg_tone_mode),
+    .dac1_delay_out(reg_dac1_delay),
+    .dac2_delay_out(reg_dac2_delay),
+    .dac_delay_apply_toggle_out(reg_dac_delay_apply_toggle),
+    .dac_spi_read_addr_out(reg_dac_spi_read_addr),
+    .dac_spi_read_toggle_out(reg_dac_spi_read_toggle),
+    .dac_spi_read_data_in(dac_spi_read_data),
+    .dac_spi_read_busy_in(dac_spi_read_busy),
+    .dac_spi_read_done_toggle_in(dac_spi_read_done_toggle)
 );
 
 // -----------------------------------------------------------------------------
@@ -638,40 +659,36 @@ axi_lite_regs u_regs (
 //   UDP/20000 ingress metadata is latched and used to drive UDP/30000 egress
 //   while payload data is provided by external logic via s_axis_rpi_tx_*.
 // -----------------------------------------------------------------------------
-reg        app3_loop_hdr_pending = 1'b0;
+reg        app3_loop_dest_valid  = 1'b0;
 reg [31:0] app3_loop_ip_dst      = 32'd0;
 reg [15:0] app3_loop_udp_dst     = 16'd0;
-reg [15:0] app3_loop_len         = 16'd0;
 
-// Only accept a new ingress header when no TX header is pending.
-assign app2_rx_hdr_ready = ~app3_loop_hdr_pending;
+localparam [15:0] APP3_TX_PAYLOAD_BYTES = 16'd512;
+localparam [15:0] APP3_TX_UDP_LENGTH    = APP3_TX_PAYLOAD_BYTES + 16'd8;
+
+// Always accept ingress headers; they update stream destination.
+assign app2_rx_hdr_ready = 1'b1;
 
 always @(posedge clk) begin
     if (rst) begin
-        app3_loop_hdr_pending <= 1'b0;
+        app3_loop_dest_valid  <= 1'b0;
         app3_loop_ip_dst      <= 32'd0;
         app3_loop_udp_dst     <= 16'd0;
-        app3_loop_len         <= 16'd0;
     end else begin
         if (app2_rx_hdr_valid && app2_rx_hdr_ready) begin
-            app3_loop_hdr_pending <= 1'b1;
+            app3_loop_dest_valid  <= 1'b1;
             app3_loop_ip_dst      <= app2_rx_ip_src;
             app3_loop_udp_dst     <= app2_rx_udp_src_port;
-            app3_loop_len         <= app2_rx_length;
-        end
-
-        if (app3_tx_hdr_valid && app3_tx_hdr_ready) begin
-            app3_loop_hdr_pending <= 1'b0;
         end
     end
 end
 
-assign app3_tx_hdr_valid    = app3_loop_hdr_pending & s_axis_rpi_tx_tvalid;
+assign app3_tx_hdr_valid    = app3_loop_dest_valid & s_axis_rpi_tx_tvalid;
 assign app3_tx_ip_dst       = app3_loop_ip_dst;
 assign app3_tx_ip_src       = local_ip;
 assign app3_tx_udp_dst_port = app3_loop_udp_dst;
 assign app3_tx_udp_src_port = 16'd30000;
-assign app3_tx_length       = app3_loop_len;
+assign app3_tx_length       = APP3_TX_UDP_LENGTH;
 
 assign app3_tx_tdata        = s_axis_rpi_tx_tdata;
 assign app3_tx_tvalid       = s_axis_rpi_tx_tvalid;
