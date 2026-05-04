@@ -10,6 +10,7 @@ SYN_FILES += rtl/ethernet_subsystem.v
 SYN_FILES += rtl/ping_pong_buffer.sv
 SYN_FILES += rtl/iq_codec_loop.sv
 SYN_FILES += rtl/fl9781_tx_wrapper.sv
+SYN_FILES += rtl/phase_costas.sv
 SYN_FILES += rtl/dac_iobuf.v
 SYN_FILES += rtl/ad9781_lut_config.v
 SYN_FILES += rtl/ad9518_lut_config.v
@@ -75,6 +76,7 @@ XDC_FILES += xdc/sync_reset.tcl
 
 # XCI files
 XCI_FILES += ip/dds_compiler_0/dds_compiler_0.xci
+XCI_FILES += ip/dds_compiler_0/cordic_0.xci
 
 include ../common/vivado.mk
 

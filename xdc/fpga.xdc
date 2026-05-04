@@ -177,6 +177,11 @@ set_multicycle_path -hold -from [get_clocks clk_mmcm_out] -to [get_clocks dac2_d
 # Also treat DAC1 and DAC2 DCO as asynchronous to each other.
 # set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks clk_200mhz] -group [get_clocks dac1_dco_clk] -group [get_clocks dac2_dco_clk]
 
+# ADC clocks are looped back from the board (driven by clk_125M output, returned
+# through the ADC chip).  Treat as asynchronous to MMCM-derived clocks.
+set_clock_groups -asynchronous -group [get_clocks adc1_clk] -group [get_clocks -include_generated_clocks clk_200mhz]
+set_clock_groups -asynchronous -group [get_clocks adc2_clk] -group [get_clocks -include_generated_clocks clk_200mhz]
+
 set_property PACKAGE_PIN AD27 [get_ports DAC2_DCI_P]
 set_property PACKAGE_PIN AB27 [get_ports DAC2_DCO_P]
 set_property PACKAGE_PIN AB29 [get_ports {DAC2_DATA_P[0]}]
@@ -218,6 +223,7 @@ set_property IOSTANDARD LVDS_25 [get_ports ADC1_CLK_P]
 set_property PACKAGE_PIN C25 [get_ports ADC1_CLK_P]
 set_property PACKAGE_PIN B25 [get_ports ADC1_CLK_N]
 set_property IOSTANDARD LVDS_25 [get_ports ADC1_CLK_N]
+create_clock -period 8.000 -name adc1_clk [get_ports ADC1_CLK_P]
 # set_property PACKAGE_PIN D27 [get_ports FMC_HPC_CLK0_M2C_P]
 # set_property IOSTANDARD LVDS_25 [get_ports FMC_HPC_CLK0_M2C_P]
 # set_property PACKAGE_PIN C27 [get_ports FMC_HPC_CLK0_M2C_N]
@@ -286,6 +292,7 @@ set_property IOSTANDARD LVDS_25 [get_ports ADC2_CLK_P]
 set_property PACKAGE_PIN F21 [get_ports ADC2_CLK_P]
 set_property PACKAGE_PIN E21 [get_ports ADC2_CLK_N]
 set_property IOSTANDARD LVDS_25 [get_ports ADC2_CLK_N]
+create_clock -period 8.000 -name adc2_clk [get_ports ADC2_CLK_P]
 set_property PACKAGE_PIN F20 [get_ports ADC2_CLK_REF]
 set_property IOSTANDARD LVCMOS25 [get_ports ADC2_CLK_REF]
 set_property PACKAGE_PIN E20 [get_ports ADC2_SPI_CE]

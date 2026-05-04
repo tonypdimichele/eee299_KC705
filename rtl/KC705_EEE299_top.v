@@ -463,6 +463,7 @@ wire [9:0] dac_spi_read_status_sync;
 wire [7:0] dac_spi_read_data_reg;
 wire       dac_spi_read_done_toggle_reg;
 wire       dac_spi_read_busy_reg;
+wire       stream_enable_reg;
 wire [7:0] rx_ring_buffer_tdata;
 wire       rx_ring_buffer_tvalid;
 wire       rx_ring_buffer_tready;
@@ -508,6 +509,7 @@ ethernet_subsystem (
     .uart_rts(UART_RTS),
     .uart_cts(uart_cts_int),
     .reg_tone_mode(dac_tone_mode),
+    .reg_stream_enable(stream_enable_reg),
     .o_reg_tone_pinc(tone_pinc),
     .reg_dac1_delay(dac1_delay_reg),
     .reg_dac2_delay(dac2_delay_reg),
@@ -804,8 +806,8 @@ end
 
 // Wire adc_stats output directly to FIFO write port
 assign adc_fifo_w_data = DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE ? adc_fifo_w_data_dbg : adc_stats_tdata;
-assign adc_fifo_w_valid = DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE ? !adc_fifo_w_almost_full : adc_stats_tvalid;
-assign adc_stats_tready = DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE ? 1'b0 : !adc_fifo_w_almost_full;
+assign adc_fifo_w_valid = DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE ? !adc_fifo_w_almost_full : (stream_enable_reg ? adc_stats_tvalid : 1'b0);
+assign adc_stats_tready = DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE ? 1'b0 : (stream_enable_reg ? !adc_fifo_w_almost_full : 1'b0);
 
 afifo_wrapper #(
     .READ_DATA_WIDTH(8)

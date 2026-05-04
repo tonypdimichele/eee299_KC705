@@ -33,6 +33,7 @@ module axi_lite_regs #
     input  wire                          s_axi_rready,
 
     output reg  [7:0]                    reg3_out,
+    output reg                           stream_enable_out,
     output reg  [31:0]                   reg_tone_pinc,
     output reg                           tone_mode_out,
     output reg  [4:0]                    dac1_delay_out,
@@ -73,7 +74,7 @@ module axi_lite_regs #
 
     always @(posedge s_axi_aclk) begin
         if (!s_axi_aresetn) begin
-            reg0 <= 0;
+            reg0 <= 32'h0000_0001;
             reg1 <= 0;
             reg3 <= 0;
             reg4_ctrl <= 32'h0001_2121;
@@ -162,6 +163,7 @@ module axi_lite_regs #
         if (!s_axi_aresetn) begin
             reg2_counter<=0;
             reg3_out<=8'h00;
+            stream_enable_out<=1'b1;
             tone_mode_out<=1'b1;
             dac1_delay_out<=5'd18;
             dac2_delay_out<=5'd18;
@@ -173,6 +175,7 @@ module axi_lite_regs #
         else begin
             reg2_counter<=reg2_counter+1;
             reg3_out<=reg3[7:0];
+            stream_enable_out<=reg0[0];
             reg_tone_pinc<=reg_tone_pinc32[31:0];
             tone_mode_out<=reg4_ctrl[0];
             dac1_delay_out<=reg4_ctrl[8:4];

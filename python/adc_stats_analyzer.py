@@ -7,7 +7,7 @@ FPGA computes:
     - Phase from sine (Q) channel
 Analyzer receives and displays those stats.
 
-Stat Packet Format (12 bytes per stat):
+Stat Packet Format (16 bytes per stat):
     [0]: sync byte (0xA7)
     [1]: peak_pos[11:4]
     [2]: peak_pos[3:0] || peak_neg[11:8]
@@ -17,6 +17,7 @@ Stat Packet Format (12 bytes per stat):
     [9]: freq_raw_clk_count[7:0]
     [10]: n_cycles[15:8]
     [11]: n_cycles[7:0]
+    [12:15]: cordic_phase (signed 32-bit, single atan2 from correlation accumulation)
 
 Usage:
     python3 python/adc_stats_analyzer.py --bind-port 40000 --fpga-ip 192.168.1.128 --duration-sec 1
@@ -34,6 +35,7 @@ import socket
 import statistics
 import sys
 import time
+from collections import deque
 from typing import Optional
 
 
@@ -41,8 +43,8 @@ class ADCStatsAnalyzer:
     """Real-time analyzer for FPGA-computed ADC statistics."""
 
     SYNC_BYTE = 0xA7
-    FRAME_LEN = 12
-    PAYLOAD_LEN = 11
+    FRAME_LEN = 16
+    PAYLOAD_LEN = 15
     MAX_SYNC_LOOKAHEAD_FRAMES = 4
     MIN_N_CYCLES = 4
     MAX_N_CYCLES = 30000
@@ -59,8 +61,15 @@ class ADCStatsAnalyzer:
         ui_refresh_sec: float = 1.5,
         debug_stats: bool = False,
         csv_output: Optional[pathlib.Path] = None,
+        rms_csv_output: Optional[pathlib.Path] = None,
+        sliding_window_size: int = 50,
         recv_size: int = 8192,
         timeout: float = 1.0,
+        resolve_pi_ambiguity: bool = True,
+        phase_ema_alpha: float = 0.25,
+        phase_max_step_deg: float = 35.0,
+        resolve_with_zc_phase: bool = True,
+        phase_relock_rejects: int = 20,
     ):
         self.bind_ip = bind_ip
         self.bind_port = bind_port
@@ -78,6 +87,11 @@ class ADCStatsAnalyzer:
         self.debug_stats = debug_stats
         self.max_valid_freq_mhz = 0.5 * self.sample_rate_msps
         self.min_valid_period_clks = 2.0
+        self.resolve_pi_ambiguity = bool(resolve_pi_ambiguity)
+        self.phase_ema_alpha = max(0.0, min(1.0, float(phase_ema_alpha)))
+        self.phase_max_step_deg = max(1.0, float(phase_max_step_deg))
+        self.resolve_with_zc_phase = bool(resolve_with_zc_phase)
+        self.phase_relock_rejects = max(1, int(phase_relock_rejects))
 
         # CSV output
         self.csv_output = csv_output
@@ -95,7 +109,9 @@ class ADCStatsAnalyzer:
                     "peak_pos_volts",
                     "peak_neg_volts",
                     "v2rms_v2",
-                    "phase_deg",
+                    "phase_zc_deg",
+                    "phase_cordic_raw_deg",
+                    "phase_cordic_stable_deg",
                     "n_cycles",
                     "freq_hz",
                     "freq_mhz",
@@ -104,6 +120,32 @@ class ADCStatsAnalyzer:
         else:
             self.csv_file = None
             self.csv_writer = None
+
+        # RMS comparison CSV output (block vs sliding)
+        self.rms_csv_output = rms_csv_output
+        self.sliding_window_size = sliding_window_size
+        if rms_csv_output:
+            rms_csv_output.parent.mkdir(parents=True, exist_ok=True)
+            self.rms_csv_file = open(rms_csv_output, "w", newline="", encoding="utf-8")
+            self.rms_csv_writer = csv.writer(self.rms_csv_file)
+            self.rms_csv_writer.writerow(
+                [
+                    "host_time_iso",
+                    "stats_processed",
+                    "report_index",
+                    "block_updated",
+                    "frequency_mhz",
+                    "measured_vpp",
+                    "stat_rms2_measured",
+                    "block_rms2_measured",
+                    "block_variance",
+                    "sliding_rms2_measured",
+                    "sliding_variance",
+                ]
+            )
+        else:
+            self.rms_csv_file = None
+            self.rms_csv_writer = None
 
         # UDP socket
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -119,10 +161,27 @@ class ADCStatsAnalyzer:
         self.batch_peak_pos_codes = []
         self.batch_peak_neg_codes = []
         self.batch_phases_deg = []
+        self.batch_cordic_phases_deg_raw = []
+        self.batch_cordic_phases_deg = []
         self.batch_n_cycles = []
         self.batch_freqs_mhz = []
         self.latest_metrics = None
         self.reports_generated = 0
+
+        # CORDIC phase stabilization state for real hardware streams.
+        self._last_cordic_phase_stable_deg = None
+        self._cordic_phase_ema_deg = None
+        self._cordic_reject_streak = 0
+        self.cordic_phase_rejects = 0
+
+        # Sliding RMS state: running sum with circular buffer
+        self.sliding_buf = deque(maxlen=self.sliding_window_size)
+        self.sliding_running_sum = 0.0
+        self.batch_v2rms_samples = []        # per-stat V²rms (for block average)
+        self.batch_sliding_outputs = []      # per-stat sliding V²rms snapshots
+        self.block_history = []              # history of completed block means (for variance)
+        self.latest_block_v2rms = 0.0
+        self.latest_block_var = 0.0
 
         # Tracking
         self.last_update_time = time.time()
@@ -152,9 +211,18 @@ class ADCStatsAnalyzer:
             print(f"  CSV output: {csv_output}")
         print(f"  UI refresh: {self.ui_refresh_sec:.1f} s")
         print(f"  Debug stats: {'on' if self.debug_stats else 'off'}")
+        print(f"  Pi ambiguity resolve: {'on' if self.resolve_pi_ambiguity else 'off'}")
+        print(f"  CORDIC phase EMA alpha: {self.phase_ema_alpha:.2f}")
+        print(f"  CORDIC max step: {self.phase_max_step_deg:.1f} deg/stat")
+        print(f"  CORDIC branch ref: {'ZC phase' if self.resolve_with_zc_phase else 'last stable'}")
+        print(f"  CORDIC relock after rejects: {self.phase_relock_rejects}")
         print(f"  Expected N range: [{self.MIN_N_CYCLES}, {self.MAX_N_CYCLES}]")
         print(f"  Max accepted frequency: {self.max_valid_freq_mhz:.3f} MHz")
         print(f"  Display: terminal UI (curses)")
+        if rms_csv_output:
+            print(f"  RMS comparison CSV: {rms_csv_output}")
+            print(f"  Sliding window size: {sliding_window_size} stats")
+            print("  RMS CSV cadence: per decoded stat (block_updated marks block refresh)")
 
     def _prime_fpga_egress(self) -> None:
         """Send one UDP datagram to FPGA ingress port so egress destination is latched."""
@@ -169,12 +237,44 @@ class ADCStatsAnalyzer:
         """Convert offset-binary ADC code to volts using default scaling."""
         return (code - self.volts_center_code) * self.volts_per_code * 5 #keep as ADC divides 1/5
 
+    @staticmethod
+    def _wrap_phase_deg(phase_deg: float) -> float:
+        return (phase_deg + 180.0) % 360.0 - 180.0
+
+    @staticmethod
+    def _circular_distance_deg(a_deg: float, b_deg: float) -> float:
+        return abs((a_deg - b_deg + 180.0) % 360.0 - 180.0)
+
+    @classmethod
+    def _circular_mean_deg(cls, phase_values_deg) -> float:
+        if not phase_values_deg:
+            return 0.0
+        s = 0.0
+        c = 0.0
+        for p in phase_values_deg:
+            r = math.radians(p)
+            s += math.sin(r)
+            c += math.cos(r)
+        if abs(s) < 1e-12 and abs(c) < 1e-12:
+            return cls._wrap_phase_deg(float(statistics.fmean(phase_values_deg)))
+        return cls._wrap_phase_deg(math.degrees(math.atan2(s, c)))
+
+    @classmethod
+    def _resolve_pi_ambiguity_deg(cls, phase_deg: float, ref_deg: float) -> float:
+        cand0 = cls._wrap_phase_deg(phase_deg)
+        cand1 = cls._wrap_phase_deg(phase_deg + 180.0)
+        if cls._circular_distance_deg(cand1, ref_deg) < cls._circular_distance_deg(cand0, ref_deg):
+            return cand1
+        return cand0
+
     def _finalize_batch_metrics(self) -> None:
         """Finalize one report from 20 decoded stats and reset batch accumulators."""
         peak_pos_avg = float(statistics.fmean(self.batch_peak_pos_codes))
         peak_neg_avg = float(statistics.fmean(self.batch_peak_neg_codes))
         peak_pp_avg = peak_pos_avg - peak_neg_avg
-        phase_avg = float(statistics.fmean(self.batch_phases_deg))
+        phase_avg = self._circular_mean_deg(self.batch_phases_deg)
+        cordic_phase_raw_avg = self._circular_mean_deg(self.batch_cordic_phases_deg_raw)
+        cordic_phase_avg = self._circular_mean_deg(self.batch_cordic_phases_deg) + 19.0 # empirical correction for CORDIC atan2 scaling/offset
         n_cycles_avg = float(statistics.fmean(self.batch_n_cycles))
         freq_avg = float(statistics.fmean(self.batch_freqs_mhz))
         freq_hz = freq_avg * 1_000_000.0
@@ -194,6 +294,8 @@ class ADCStatsAnalyzer:
             "peak_pp_volts": peak_pp_volts,
             "v2rms_v2": v2rms_v2,
             "phase_deg": phase_avg,
+            "cordic_phase_deg_raw": cordic_phase_raw_avg,
+            "cordic_phase_deg": cordic_phase_avg,
             "n_cycles": n_cycles_avg,
             "freq_mhz": freq_avg,
             "freq_hz": freq_hz,
@@ -201,9 +303,11 @@ class ADCStatsAnalyzer:
 
         if self.csv_writer:
             ts = time.time()
+            ts_us = int((ts % 1) * 1_000_000)
+            ts_str = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts)) + f".{ts_us:06d}"
             self.csv_writer.writerow(
                 [
-                    time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts)),
+                    ts_str,
                     self.reports_generated + 1,
                     self.total_stats_read,
                     f"{peak_pos_avg:.3f}",
@@ -212,18 +316,34 @@ class ADCStatsAnalyzer:
                     f"{peak_neg_volts:.6f}",
                     f"{v2rms_v2:.9f}",
                     f"{phase_avg:.3f}",
+                    f"{cordic_phase_raw_avg:.3f}",
+                    f"{cordic_phase_avg:.3f}",
                     f"{n_cycles_avg:.3f}",
                     f"{freq_hz:.3f}",
                     f"{freq_avg:.6f}",
                 ]
             )
 
+        if self.batch_v2rms_samples:
+            block_mean = float(statistics.fmean(self.batch_v2rms_samples))
+            self.latest_block_v2rms = block_mean
+            self.block_history.append(block_mean)
+            # Variance is computed from the history of block means
+            self.latest_block_var = (
+                float(statistics.variance(self.block_history))
+                if len(self.block_history) > 1 else 0.0
+            )
+
         self.reports_generated += 1
         self.batch_peak_pos_codes.clear()
         self.batch_peak_neg_codes.clear()
         self.batch_phases_deg.clear()
+        self.batch_cordic_phases_deg_raw.clear()
+        self.batch_cordic_phases_deg.clear()
         self.batch_n_cycles.clear()
         self.batch_freqs_mhz.clear()
+        self.batch_v2rms_samples.clear()
+        self.batch_sliding_outputs.clear()
 
     def read_udp_chunk(self) -> int:
         """Read UDP packet, decode stats, return count of new stats."""
@@ -285,6 +405,7 @@ class ADCStatsAnalyzer:
             phase_raw = self._decode_phase(stat_bytes)
             freq_raw = self._decode_freq(stat_bytes)
             n_cycles = self._decode_n_cycles(stat_bytes)
+            cordic_phase_raw = self._decode_cordic_phase(stat_bytes)
 
             # Transport should carry offset-binary peaks with pos >= neg; auto-correct if inverted.
             if peak_pos_code < peak_neg_code:
@@ -296,7 +417,7 @@ class ADCStatsAnalyzer:
                     f"DEBUG stat {self.total_stats_read}: frame={self.SYNC_BYTE:02x} "
                     f"{' '.join(f'{b:02x}' for b in stat_bytes)} "
                     f"peak_pos={peak_pos_code} peak_neg={peak_neg_code} phase_raw={phase_raw} "
-                    f"freq_raw={freq_raw} n_cycles={n_cycles} "
+                    f"freq_raw={freq_raw} n_cycles={n_cycles} cordic_raw={cordic_phase_raw} "
                     f"rejected={self.frames_rejected}"
                 )
 
@@ -327,6 +448,50 @@ class ADCStatsAnalyzer:
                 phase_deg = (phase_deg + 180.0) % 360.0 - 180.0
             else:
                 phase_deg = 0.0
+
+            # CORDIC atan2 phase: cordic_phase_raw is sum of signed 16-bit phases over N crossings.
+            # RTL already aligns the sampling strobe to CORDIC latency, so no frequency-dependent
+            # correction is needed here.
+            if n_cycles > 0:
+                cordic_phase_deg_raw = cordic_phase_raw * 180.0 / 32768.0
+                cordic_phase_deg_raw -= self.phase_reference_deg
+                cordic_phase_deg_raw = self._wrap_phase_deg(cordic_phase_deg_raw)
+
+                cordic_phase_deg_resolved = cordic_phase_deg_raw
+                if self.resolve_pi_ambiguity:
+                    branch_ref = phase_deg if self.resolve_with_zc_phase else self._last_cordic_phase_stable_deg
+                    if branch_ref is None:
+                        branch_ref = phase_deg
+                    cordic_phase_deg_resolved = self._resolve_pi_ambiguity_deg(
+                        cordic_phase_deg_raw,
+                        branch_ref,
+                    )
+
+                if self._cordic_phase_ema_deg is None:
+                    self._cordic_phase_ema_deg = cordic_phase_deg_resolved
+                    self._cordic_reject_streak = 0
+                else:
+                    # EMA on circular manifold with jump rejection to suppress
+                    # packet-level glitches that appear as random sign flips.
+                    delta = self._wrap_phase_deg(cordic_phase_deg_resolved - self._cordic_phase_ema_deg)
+                    if abs(delta) > self.phase_max_step_deg:
+                        self.cordic_phase_rejects += 1
+                        self._cordic_reject_streak += 1
+                        if self._cordic_reject_streak >= self.phase_relock_rejects:
+                            # Reacquire lock if stream legitimately jumped phase.
+                            self._cordic_phase_ema_deg = cordic_phase_deg_resolved
+                            self._cordic_reject_streak = 0
+                    else:
+                        self._cordic_phase_ema_deg = self._wrap_phase_deg(
+                            self._cordic_phase_ema_deg + self.phase_ema_alpha * delta
+                        )
+                        self._cordic_reject_streak = 0
+
+                cordic_phase_deg = self._cordic_phase_ema_deg
+                self._last_cordic_phase_stable_deg = cordic_phase_deg
+            else:
+                cordic_phase_deg_raw = 0.0
+                cordic_phase_deg = 0.0
 
             # Physical consistency check:
             # period_clks = raw_clk_count / n_cycles should be >= ~2 near Nyquist.
@@ -361,13 +526,67 @@ class ADCStatsAnalyzer:
             self.batch_peak_pos_codes.append(peak_pos_code)
             self.batch_peak_neg_codes.append(peak_neg_code)
             self.batch_phases_deg.append(phase_deg)
+            self.batch_cordic_phases_deg_raw.append(cordic_phase_deg_raw)
+            self.batch_cordic_phases_deg.append(cordic_phase_deg)
             self.batch_n_cycles.append(n_cycles)
             self.batch_freqs_mhz.append(freq_mhz)
 
+            # Per-stat V²rms for block vs sliding comparison
+            stat_vpp = 0.0
+            stat_v2rms = 0.0
+            sliding_v2rms = 0.0
+            sliding_var = 0.0
+            if self.rms_csv_writer:
+                stat_vpp = self.code_to_volts(peak_pos_code) - self.code_to_volts(peak_neg_code)
+                stat_v2rms = (stat_vpp * stat_vpp) / 8.0
+                self.batch_v2rms_samples.append(stat_v2rms)
+                # Sliding: subtract oldest if buffer full, then add new
+                if len(self.sliding_buf) == self.sliding_window_size:
+                    self.sliding_running_sum -= self.sliding_buf[0]
+                self.sliding_buf.append(stat_v2rms)
+                self.sliding_running_sum += stat_v2rms
+                # Record this step's sliding output
+                sliding_v2rms = self.sliding_running_sum / len(self.sliding_buf)
+                self.batch_sliding_outputs.append(sliding_v2rms)
+                sliding_var = (
+                    statistics.variance(self.batch_sliding_outputs)
+                    if len(self.batch_sliding_outputs) > 1 else 0.0
+                )
+
             self.total_stats_read += 1
 
+            block_updated = 0
             if len(self.batch_peak_pos_codes) >= self.batch_size:
                 self._finalize_batch_metrics()
+                block_updated = 1
+
+            if self.rms_csv_writer:
+                # Before first block measurement, show NaN for block metrics
+                if self.reports_generated == 0:
+                    block_rms_str = "NaN"
+                    block_var_str = "NaN"
+                else:
+                    block_rms_str = f"{self.latest_block_v2rms:.9f}"
+                    block_var_str = f"{self.latest_block_var:.12f}"
+                
+                ts = time.time()
+                ts_us = int((ts % 1) * 1_000_000)
+                ts_str = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts)) + f".{ts_us:06d}"
+                self.rms_csv_writer.writerow(
+                    [
+                        ts_str,
+                        self.total_stats_read,
+                        self.reports_generated,
+                        block_updated,
+                        f"{freq_mhz:.6f}",
+                        f"{stat_vpp:.6f}",
+                        f"{stat_v2rms:.9f}",
+                        block_rms_str,
+                        block_var_str,
+                        f"{sliding_v2rms:.9f}",
+                        f"{sliding_var:.12f}",
+                    ]
+                )
 
             count += 1
 
@@ -411,6 +630,14 @@ class ADCStatsAnalyzer:
         """Decode N (cycle count used) from bytes [9:11]."""
         return (stat_bytes[9] << 8) | stat_bytes[10]  # 16-bit
 
+    @staticmethod
+    def _decode_cordic_phase(stat_bytes: bytearray) -> int:
+        """Decode CORDIC phase sum from bytes [11:15] as signed 32-bit."""
+        raw = (stat_bytes[11] << 24) | (stat_bytes[12] << 16) | (stat_bytes[13] << 8) | stat_bytes[14]
+        if raw >= 0x80000000:
+            raw -= 0x100000000
+        return raw
+
     def compute_metrics(self) -> dict:
         """Return most recent 20-sample batch report."""
         if self.latest_metrics is None:
@@ -431,7 +658,8 @@ class ADCStatsAnalyzer:
         print(
             f"\n{'='*70}"
             f"\nADC Stats Analyzer | Stats: {self.total_stats_read:,} | "
-            f"Packets: {self.packets_received} | Bytes: {self.bytes_received:,}"
+            f"Packets: {self.packets_received} | Bytes: {self.bytes_received:,} | "
+            f"CORDIC rejects: {self.cordic_phase_rejects}"
             f"\n{'='*70}"
         )
         print(f"Batch averaging: {self.batch_size} stats/report | Reports: {self.reports_generated}")
@@ -447,9 +675,11 @@ class ADCStatsAnalyzer:
         )
         print(
             f"Phase & Frequency:\n"
-            f"  Phase (sin Q):    {metrics['phase_deg']:.2f}°\n"
-            f"  N cycles:         {metrics['n_cycles']:.1f}\n"
-            f"  Frequency:        {metrics['freq_mhz']:.4f} MHz"
+            f"  Phase ZC (sin Q):     {metrics['phase_deg']:.2f}\u00b0\n"
+            f"  Phase CORDIC raw:     {metrics['cordic_phase_deg_raw']:.2f}\u00b0\n"
+            f"  Phase CORDIC stable:  {metrics['cordic_phase_deg']:.2f}\u00b0\n"
+            f"  N cycles:             {metrics['n_cycles']:.1f}\n"
+            f"  Frequency:            {metrics['freq_mhz']:.4f} MHz"
         )
 
     def print_metrics_curses(self, stdscr, metrics: dict) -> None:
@@ -468,7 +698,8 @@ class ADCStatsAnalyzer:
 
                 stdscr.addstr(row, 0,
                     f"ADC Stats | Stats: {self.total_stats_read:,} | "
-                    f"Packets: {self.packets_received} | Bytes: {self.bytes_received:,}")
+                    f"Packets: {self.packets_received} | Bytes: {self.bytes_received:,} | "
+                    f"CORDIC rejects: {self.cordic_phase_rejects}")
                 stdscr.clrtoeol()
                 row += 1
 
@@ -508,13 +739,19 @@ class ADCStatsAnalyzer:
                 stdscr.addstr(row, 0, "Phase & Frequency:")
                 stdscr.clrtoeol()
                 row += 1
-                stdscr.addstr(row, 0, f"  Phase (sin Q):  {metrics['phase_deg']:.2f}\u00b0")
+                stdscr.addstr(row, 0, f"  Phase ZC (sin Q):     {metrics['phase_deg']:.2f}\u00b0")
                 stdscr.clrtoeol()
                 row += 1
-                stdscr.addstr(row, 0, f"  N cycles:       {metrics['n_cycles']:.1f}")
+                stdscr.addstr(row, 0, f"  Phase CORDIC raw:     {metrics['cordic_phase_deg_raw']:.2f}\u00b0")
                 stdscr.clrtoeol()
                 row += 1
-                stdscr.addstr(row, 0, f"  Frequency:      {metrics['freq_mhz']:.4f} MHz")
+                stdscr.addstr(row, 0, f"  Phase CORDIC stable:  {metrics['cordic_phase_deg']:.2f}\u00b0")
+                stdscr.clrtoeol()
+                row += 1
+                stdscr.addstr(row, 0, f"  N cycles:             {metrics['n_cycles']:.1f}")
+                stdscr.clrtoeol()
+                row += 1
+                stdscr.addstr(row, 0, f"  Frequency:            {metrics['freq_mhz']:.4f} MHz")
                 stdscr.clrtoeol()
                 row += 2
 
@@ -545,6 +782,8 @@ class ADCStatsAnalyzer:
                 new_count = self.read_udp_chunk()
                 if new_count > 0 and self.csv_file:
                     self.csv_file.flush()
+                if new_count > 0 and self.rms_csv_file:
+                    self.rms_csv_file.flush()
 
                 now = time.time()
                 if (now - last_update) >= self.ui_refresh_sec:
@@ -568,6 +807,8 @@ class ADCStatsAnalyzer:
                 pass
             if self.csv_file:
                 self.csv_file.close()
+            if self.rms_csv_file:
+                self.rms_csv_file.close()
             print("\nStopped by user")
 
     def run(self, duration_sec: Optional[float] = None) -> None:
@@ -650,11 +891,54 @@ def main() -> int:
         default=0,
         help="Run duration in seconds (<=0 runs until Ctrl+C)",
     )
+    parser.add_argument(
+        "--rms-csv",
+        default="",
+        help="CSV file for block vs sliding RMS comparison output",
+    )
+    parser.add_argument(
+        "--sliding-window",
+        type=int,
+        default=50,
+        help="Sliding RMS window size in stats (default: 50)",
+    )
+    parser.add_argument(
+        "--phase-ema-alpha",
+        type=float,
+        default=0.25,
+        help="CORDIC phase EMA alpha in [0,1] for live stabilization",
+    )
+    parser.add_argument(
+        "--no-resolve-pi",
+        action="store_true",
+        help="Disable 180-degree branch ambiguity resolution for CORDIC phase",
+    )
+    parser.add_argument(
+        "--phase-max-step-deg",
+        type=float,
+        default=35.0,
+        help="Reject per-stat CORDIC phase jumps larger than this many degrees",
+    )
+    parser.add_argument(
+        "--relock-rejects",
+        type=int,
+        default=20,
+        help="Reacquire CORDIC lock after this many consecutive rejected jumps",
+    )
+    parser.add_argument(
+        "--no-zc-branch-ref",
+        action="store_true",
+        help="Resolve CORDIC 180-degree branch using last stable phase instead of ZC phase",
+    )
     args = parser.parse_args()
 
     csv_output_path = None
     if args.csv_output.strip():
         csv_output_path = pathlib.Path(args.csv_output)
+
+    rms_csv_path = None
+    if args.rms_csv.strip():
+        rms_csv_path = pathlib.Path(args.rms_csv)
 
     analyzer = ADCStatsAnalyzer(
         bind_ip=args.bind_ip,
@@ -667,8 +951,15 @@ def main() -> int:
         ui_refresh_sec=args.ui_refresh_sec,
         debug_stats=args.debug_stats,
         csv_output=csv_output_path,
+        rms_csv_output=rms_csv_path,
+        sliding_window_size=args.sliding_window,
         recv_size=args.recv_size,
         timeout=args.timeout,
+        resolve_pi_ambiguity=not args.no_resolve_pi,
+        phase_ema_alpha=args.phase_ema_alpha,
+        phase_max_step_deg=args.phase_max_step_deg,
+        resolve_with_zc_phase=not args.no_zc_branch_ref,
+        phase_relock_rejects=args.relock_rejects,
     )
 
     duration = args.duration_sec if args.duration_sec > 0 else None
