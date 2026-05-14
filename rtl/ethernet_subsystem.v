@@ -83,6 +83,7 @@ module ethernet_subsystem #
     input  wire       uart_cts,
 
     output wire       reg_tone_mode,
+    output wire       reg_stream_enable,
     output wire [31:0] o_reg_tone_pinc,
     output wire [4:0] reg_dac1_delay,
     output wire [4:0] reg_dac2_delay,
@@ -642,6 +643,7 @@ axi_lite_regs u_regs (
     .s_axi_rready (rb_RREADY[0]),
 
     .reg3_out(regs_led),
+    .stream_enable_out(reg_stream_enable),
     .reg_tone_pinc(o_reg_tone_pinc),
     .tone_mode_out(reg_tone_mode),
     .dac1_delay_out(reg_dac1_delay),

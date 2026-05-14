@@ -8,6 +8,7 @@ REG_COUNTER = 0x08
 REG_LED = 0x0C
 REG_DAC_CTRL = 0x10
 REG_DAC_SPI_READ = 0x18
+REG_STREAM_CTRL = 0x00
 
 
 def decode_dac_spi_read_reg(value):
@@ -83,6 +84,8 @@ def main():
     parser.add_argument("--write", type=lambda x: int(x, 0), default=None)
     parser.add_argument("--read", action="store_true")
     parser.add_argument("--demo", action="store_true", help="write/read REG3 and read counter")
+    parser.add_argument("--stream-off", action="store_true", help="Disable FPGA ADC UDP stream (REG0[0]=0)")
+    parser.add_argument("--stream-on", action="store_true", help="Enable FPGA ADC UDP stream (REG0[0]=1)")
     parser.add_argument("--dac-read-addr", type=lambda x: int(x, 0), default=None,
                         help="Issue a single-byte DAC1 SPI register read via AXI register 0x18")
     args = parser.parse_args()
@@ -95,6 +98,16 @@ def main():
 
     if args.dac_read_addr is not None:
         trigger_dac_spi_read(args.ip, args.port, args.dac_read_addr, timeout=args.timeout)
+        return
+
+    if args.stream_off:
+        udp_write(args.ip, args.port, REG_STREAM_CTRL, 0x00000000, timeout=args.timeout)
+        udp_read(args.ip, args.port, REG_STREAM_CTRL, timeout=args.timeout)
+        return
+
+    if args.stream_on:
+        udp_write(args.ip, args.port, REG_STREAM_CTRL, 0x00000001, timeout=args.timeout)
+        udp_read(args.ip, args.port, REG_STREAM_CTRL, timeout=args.timeout)
         return
 
     if args.write is not None:

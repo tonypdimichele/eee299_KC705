@@ -507,13 +507,116 @@ def build():
         "    --fpga-ip 192.168.1.128 \\\n"
         "    --duration-sec 1"
     )
-    pdf.body("Key command-line options:")
-    pdf.bullet("--sample-rate-msps: ADC sample rate (default 125.0). Must match FPGA clock.")
-    pdf.bullet("--phase-reference-deg: Subtract a reference phase for calibrated display.")
-    pdf.bullet("--csv-output: Record all batch reports to CSV while analyzing.")
-    pdf.bullet("--debug-stats: Print raw decoded hex for the first 10 stats and every 100th.")
-    pdf.bullet("--no-prime: Skip the auto-prime packet (useful if FPGA egress already latched).")
-    pdf.bullet("--ui-refresh-sec: Curses display refresh interval (default 1.5 s).")
+    pdf.body(
+        "The script can also be run in RMS comparison mode, which records "
+        "per-batch block and sliding V^2_rms values to a CSV file for "
+        "offline analysis in a spreadsheet:"
+    )
+    pdf.code(
+        "python3 python/adc_stats_analyzer.py \\\n"
+        "    --bind-port 40000 \\\n"
+        "    --fpga-ip 192.168.1.128 \\\n"
+        "    --rms-csv rms_comparison.csv \\\n"
+        "    --sliding-window 50 \\\n"
+        "    --duration-sec 1"
+    )
+
+    pdf.subsection("7.1", "Command-Line Parameter Reference")
+    pdf.body("The following table lists all supported parameters:")
+
+    # CLI parameter table
+    pw = [52, 15, 107]
+    pdf.table_row(list(zip(pw, ["Parameter", "Default", "Description"])), bold=True, fill=True)
+    cli_params = [
+        ("--bind-ip", "0.0.0.0", "Local IP to bind the UDP socket to. 0.0.0.0 = all interfaces."),
+        ("--bind-port", "40000", "Local UDP port to listen on for FPGA stat packets."),
+        ("--fpga-ip", "192.168.1.128", "FPGA IP address used for the auto-prime packet."),
+        ("--prime-port", "20000", "FPGA ingress UDP port used for the auto-prime packet."),
+        ("--no-prime", "False", "Disable auto-prime packet at startup (flag, no value)."),
+        ("--sample-rate-msps", "125.0", "ADC sample rate in MSPS. Must match FPGA clock."),
+        ("--phase-reference-deg", "0.0", "Phase reference offset in degrees (subtracted from measured)."),
+        ("--ui-refresh-sec", "1.5", "Curses display refresh interval in seconds."),
+        ("--debug-stats", "False", "Print raw hex for first 10 stats and every 100th (flag)."),
+        ("--csv-output", "(none)", "Path to CSV file for per-batch metrics recording."),
+        ("--rms-csv", "(none)", "Path to CSV for block vs sliding RMS comparison output."),
+        ("--sliding-window", "50", "Sliding RMS window size in number of stats."),
+        ("--recv-size", "8192", "UDP socket receive buffer size in bytes."),
+        ("--timeout", "1.0", "UDP socket receive timeout in seconds."),
+        ("--duration-sec", "0", "Run duration in seconds. 0 or negative = run until Ctrl+C."),
+    ]
+    pdf.set_font("Helvetica", "", 8)
+    for param, default, desc in cli_params:
+        pdf.cell(pw[0], 5.5, param, border=1)
+        pdf.cell(pw[1], 5.5, default, border=1, align="C")
+        pdf.cell(pw[2], 5.5, desc, border=1)
+        pdf.ln()
+    pdf.ln(3)
+
+    pdf.subsection("7.2", "Network Parameters")
+    pdf.body(
+        "The --bind-ip and --bind-port parameters control the local UDP socket. "
+        "The analyzer listens for FPGA stat packets on this address/port combination. "
+        "Use 0.0.0.0 to accept packets on any network interface, or specify a "
+        "specific interface IP to restrict reception."
+    )
+    pdf.body(
+        "The --fpga-ip and --prime-port parameters control the auto-prime packet. "
+        "At startup, the analyzer sends a single UDP datagram ('PRIME') to the "
+        "FPGA's ingress port. The FPGA Ethernet subsystem latches the source IP "
+        "and port from this packet and uses them as the destination for all "
+        "egress stat traffic on port 30000. If the FPGA egress destination is "
+        "already latched (e.g. from a previous session), use --no-prime to skip."
+    )
+
+    pdf.subsection("7.3", "Measurement Parameters")
+    pdf.body(
+        "The --sample-rate-msps parameter must match the actual ADC sample clock "
+        "frequency. It is used to convert raw clock counts into MHz for the "
+        "frequency display. If this value is wrong, all displayed frequencies "
+        "will be scaled incorrectly by the ratio of actual/configured rates."
+    )
+    pdf.body(
+        "The --phase-reference-deg parameter subtracts a fixed offset from all "
+        "phase readings. This is useful when the physical I/Q channel routing "
+        "introduces a known fixed phase offset that should be removed for "
+        "cleaner display."
+    )
+
+    pdf.subsection("7.4", "Output Parameters")
+    pdf.body(
+        "--csv-output enables recording of per-batch metrics (peak codes, voltages, "
+        "V^2_rms, phase, frequency) to a CSV file. Each row corresponds to one "
+        "20-stat batch. The file is flushed after each batch so data is preserved "
+        "even if the script is interrupted."
+    )
+    pdf.body(
+        "--rms-csv enables RMS comparison mode. In this mode, the analyzer computes "
+        "both block and sliding V^2_rms for each stat and writes per-batch summary "
+        "rows to a separate CSV. The columns are:\n"
+        "  host_time_iso, report_index, frequency_mhz, measured_vpp,\n"
+        "  block_rms2_measured, block_variance,\n"
+        "  sliding_rms2_measured, sliding_variance\n\n"
+        "The block values are computed as the mean and variance of V^2_rms "
+        "over the 20-stat batch (reset each batch). The sliding values are the "
+        "latest output and step-to-step variance of a running-sum estimator with "
+        "window size set by --sliding-window. The sliding state persists across "
+        "batch boundaries."
+    )
+
+    pdf.subsection("7.5", "Timing Parameters")
+    pdf.body(
+        "--duration-sec controls how long the analyzer runs. A value of 0 or "
+        "negative means the analyzer runs indefinitely until Ctrl+C. For automated "
+        "data collection, use a positive value (e.g. --duration-sec 5 to collect "
+        "5 seconds of data per frequency point).\n\n"
+        "--ui-refresh-sec controls how often the curses terminal display updates. "
+        "Lower values give more responsive display but increase CPU usage. The "
+        "default of 1.5 seconds is suitable for most use cases.\n\n"
+        "--timeout controls the UDP socket receive timeout. If no packet arrives "
+        "within this interval, the receive call returns empty and the main loop "
+        "continues (checking for duration expiry and UI refresh). The default of "
+        "1.0 second is appropriate for normal operation."
+    )
 
     # Output
     out = "/home/tony/sambashare/school/clean/eee299_KC705/doc/adc_stats_subsystem.pdf"
