@@ -14,6 +14,7 @@ SYN_FILES += rtl/phase_costas.sv
 SYN_FILES += rtl/dac_iobuf.v
 SYN_FILES += rtl/ad9781_lut_config.v
 SYN_FILES += rtl/ad9518_lut_config.v
+SYN_FILES += rtl/phase_costas.sv
 SYN_FILES += rtl/dac_config.v
 SYN_FILES += rtl/spi_cmd.v
 SYN_FILES += rtl/spi_master.v

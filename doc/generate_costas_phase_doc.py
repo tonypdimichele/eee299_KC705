@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate PDF: Costas Correlation Phase Estimator with Hilbert FIR and CORDIC."""
+"""Generate PDF: Costas Correlation Phase Estimator with Hilbert FIR."""
 
 from fpdf import FPDF
 import subprocess, pathlib, sys
@@ -10,28 +10,23 @@ class DocPDF(FPDF):
     COL_W = 174  # 210 - 2*18
 
     def header(self):
-        if self.page_no() > 1:
-            self.set_font("Helvetica", "I", 8)
-            self.cell(0, 5, "EEE299 KC705 -- Costas Phase Estimator", align="C")
-            self.ln(8)
+        self.set_font("Helvetica", "I", 8)
+        self.cell(0, 5, "EEE299 -- Costas Correlation Phase Estimator", align="R", new_x="LMARGIN", new_y="NEXT")
+        self.ln(2)
 
     def footer(self):
         self.set_y(-15)
         self.set_font("Helvetica", "I", 8)
-        self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", align="C")
+        self.cell(0, 5, f"Page {self.page_no()}/{{nb}}", align="C")
 
     def section(self, num, title):
         self.set_font("Helvetica", "B", 14)
-        self.set_text_color(0, 51, 102)
-        self.cell(0, 10, f"{num}  {title}", new_x="LMARGIN", new_y="NEXT")
-        self.set_text_color(0)
+        self.cell(0, 10, f"{num}. {title}", new_x="LMARGIN", new_y="NEXT")
         self.ln(2)
 
     def subsection(self, num, title):
         self.set_font("Helvetica", "B", 11)
-        self.set_text_color(0, 51, 102)
-        self.cell(0, 8, f"{num}  {title}", new_x="LMARGIN", new_y="NEXT")
-        self.set_text_color(0)
+        self.cell(0, 8, f"{num} {title}", new_x="LMARGIN", new_y="NEXT")
         self.ln(1)
 
     def body(self, text):
@@ -42,40 +37,39 @@ class DocPDF(FPDF):
     def bold(self, text):
         self.set_font("Helvetica", "B", 10)
         self.multi_cell(self.COL_W, 5, text)
-        self.ln(2)
+        self.ln(1)
 
     def code(self, text):
-        self.set_font("Courier", "", 8.5)
-        self.set_fill_color(240, 240, 240)
-        for line in text.strip().split("\n"):
-            self.cell(self.COL_W, 4.5, "  " + line, fill=True, new_x="LMARGIN", new_y="NEXT")
-        self.ln(3)
+        self.set_font("Courier", "", 8)
+        for line in text.split("\n"):
+            self.cell(0, 4, f"  {line}", new_x="LMARGIN", new_y="NEXT")
+        self.ln(2)
 
     def bullet(self, text):
         self.set_font("Helvetica", "", 10)
-        self.cell(6, 5, "-")
-        self.multi_cell(self.COL_W - 6, 5, text)
+        self.set_x(self.l_margin + 4)
+        self.multi_cell(self.COL_W - 4, 5, f"- {text}")
         self.ln(1)
 
     def equation(self, tex):
         self.set_font("Courier", "B", 10)
-        self.cell(self.COL_W, 7, tex, align="C", new_x="LMARGIN", new_y="NEXT")
-        self.ln(2)
+        self.cell(0, 6, f"    {tex}", new_x="LMARGIN", new_y="NEXT")
+        self.ln(1)
 
     def table_row(self, cells, bold=False, fill=False):
         style = "B" if bold else ""
         self.set_font("Helvetica", style, 9)
-        if fill:
-            self.set_fill_color(220, 230, 241)
-        for w, txt in cells:
-            self.cell(w, 6, txt, border=1, fill=fill, align="C")
+        col_w = self.COL_W / len(cells)
+        for c in cells:
+            self.cell(col_w, 6, str(c), border=1, align="C",
+                      fill=fill, new_x="RIGHT", new_y="TOP")
         self.ln()
 
     def ref_entry(self, tag, text):
         self.set_font("Helvetica", "B", 9)
-        self.cell(10, 5, tag)
+        self.cell(12, 5, tag)
         self.set_font("Helvetica", "", 9)
-        self.multi_cell(self.COL_W - 10, 5, text)
+        self.multi_cell(self.COL_W - 12, 5, text)
         self.ln(1)
 
 
@@ -92,7 +86,7 @@ def build():
     pdf.set_font("Helvetica", "B", 24)
     pdf.cell(0, 14, "Costas Correlation Phase Estimator", align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 14)
-    pdf.cell(0, 10, "Hilbert FIR + CORDIC atan2 Implementation", align="C",
+    pdf.cell(0, 10, "Hilbert FIR + Host-Side atan2 Implementation", align="C",
              new_x="LMARGIN", new_y="NEXT")
     pdf.ln(8)
     pdf.set_font("Helvetica", "", 12)
@@ -102,31 +96,60 @@ def build():
     pdf.set_font("Helvetica", "I", 10)
     pdf.cell(0, 6, "Xilinx Kintex-7 KC705, AD9627 dual-channel 12-bit ADC @ 125 MSPS,", align="C",
              new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, "Xilinx CORDIC IP v6.0, custom Hilbert FIR phase-shift network.", align="C",
+    pdf.cell(0, 6, "custom Hilbert FIR phase-shift network, Python host-side atan2.", align="C",
              new_x="LMARGIN", new_y="NEXT")
 
     # ======== 1. INTRODUCTION ========
     pdf.add_page()
     pdf.section("1", "Introduction")
     pdf.body(
-        "This document describes the FPGA-based Costas correlation phase estimator used to "
-        "measure the relative phase between two same-frequency sinusoidal signals received on "
-        "the I (cosine) and Q (sine) channels of an AD9627 dual-channel ADC. The measurement "
-        "is frequency-independent across the passband (approximately 1.3 MHz to 40 MHz at "
-        "125 MSPS sampling) and produces a single scalar phase value per measurement window."
+        "This document describes the FPGA-based Costas correlation phase estimator implemented "
+        "in phase_costas.sv. The module measures the relative phase between two same-frequency "
+        "sinusoidal signals received on the I (cosine) and Q (sine) channels of an AD9627 "
+        "dual-channel ADC. The measurement is frequency-independent across the passband "
+        "(approximately 1.3 MHz to 40 MHz at 125 MSPS sampling)."
     )
     pdf.body(
-        "The estimator uses three key signal-processing building blocks:"
+        "The system uses a hardware/software co-design approach:"
     )
-    pdf.bullet("A 15-tap Type III FIR Hilbert transform to produce a broadband 90-degree phase "
-               "shift of the I channel, replacing the earlier frequency-dependent delay-line approach.")
-    pdf.bullet("Correlation accumulators that compute the in-phase and quadrature cross-correlation "
-               "between the (shifted) I signal and the Q signal over N zero-crossing cycles.")
-    pdf.bullet("A pipelined CORDIC arc-tangent (atan2) core that converts the correlation pair "
-               "(X, Y) into a phase angle.")
+    pdf.bullet("FPGA: Computes the correlation pair (X, Y) using a 15-tap Hilbert FIR and "
+               "pipelined accumulators. Normalizes the 40-bit accumulators to 12-bit signed "
+               "values and transmits them to the host via UDP.")
+    pdf.bullet("Host (Python): Receives the normalized X/Y pair and computes "
+               "phase = atan2(Y, X) using IEEE 754 double-precision math. This eliminates "
+               "FPGA CORDIC IP complexity and provides full-precision four-quadrant phase.")
     pdf.body(
-        "The final output is a signed 16-bit phase in radian fixed-point format (Xilinx CORDIC "
-        "convention), sign-extended to 32 bits and transmitted to the host in a 16-byte UDP packet."
+        "This approach was chosen after validating that FPGA-side CORDIC introduced "
+        "pipeline-latching artifacts. Moving atan2 to Python gives exact results with "
+        "zero FPGA resource cost for the trigonometric computation."
+    )
+
+    pdf.subsection("1.1", "System Context")
+    pdf.body(
+        "The phase_costas module is instantiated by adc_stats.sv, which orchestrates the "
+        "adaptive-N zero-crossing frequency measurement, peak tracking, and I-to-Q delay "
+        "measurement. The adc_stats module drives the window_start and window_done pulses "
+        "into phase_costas based on I-channel zero-crossing events, ensuring the correlation "
+        "window spans an integer number of signal cycles."
+    )
+    pdf.body("The adc_stats output is a 16-byte AXIS byte stream packed as:")
+    pdf.code(
+        "Byte    Field\n"
+        "------  -----\n"
+        " [0]    0xA7 sync byte\n"
+        " [1]    peak_pos[11:4]\n"
+        " [2]    {peak_pos[3:0], peak_neg[11:8]}\n"
+        " [3]    peak_neg[7:0]\n"
+        "[4:7]   iq_delay_sum (unsigned 32-bit big-endian)\n"
+        "[8:9]   measured_clk_count (unsigned 16-bit big-endian)\n"
+        "[10:11] measured_cycles_count (unsigned 16-bit big-endian)\n"
+        "[12:13] corr_y (signed 16-bit big-endian, correlation Y)\n"
+        "[14:15] corr_x (signed 16-bit big-endian, correlation X)"
+    )
+    pdf.body(
+        "This packet crosses the adc1_clk -> clk_int clock domain via an async FIFO in "
+        "KC705_EEE299_top.v, then is encapsulated into UDP frames by the ethernet subsystem "
+        "for delivery to the host."
     )
 
     # ======== 2. COSTAS CORRELATION METHOD ========
@@ -143,30 +166,53 @@ def build():
         "The phase phi can be recovered by correlating Q against both I and a 90-degree shifted "
         "copy of I (denoted I_90). Over one or more complete cycles:"
     )
-    pdf.equation("X = SUM[ I[n] * Q[n] ]  =  (AB/2) * cos(phi)   (DC term, AC cancels)")
-    pdf.equation("Y = SUM[ I_90[n] * Q[n] ]  =  (AB/2) * sin(phi)")
+    pdf.equation("X = SUM[ I[n]*Q[n] + I90[n]*Q90[n] ]  =  (AB/2) * cos(phi)")
+    pdf.equation("Y = SUM[ I90[n]*Q[n] - I[n]*Q90[n] ]  =  (AB/2) * sin(phi)")
     pdf.body(
         "The phase is then:"
     )
     pdf.equation("phi = atan2(Y, X)")
     pdf.body(
-        "This is the standard Costas-loop discriminator formulation [1][2]. The key advantage is "
+        "This is the standard Costas-loop discriminator formulation. The key advantage is "
         "that the amplitude terms A and B cancel in the ratio Y/X, making the measurement "
         "amplitude-independent. The atan2 function resolves all four quadrants."
     )
 
     pdf.subsection("2.2", "Windowed Accumulation")
     pdf.body(
-        "In our implementation, the accumulators X and Y run over a measurement window of N "
-        "positive-going zero crossings of the I channel (the same window used for frequency "
-        "measurement). This ensures integration over exact whole cycles, which is critical for "
-        "the AC cross-terms to cancel to zero. The adaptive-N system adjusts N to keep the "
-        "total clock count in a target range (8000-50000 clocks), balancing measurement rate "
-        "against noise averaging."
+        "The accumulators X and Y run over a measurement window of N positive-going zero "
+        "crossings of the I channel, where zero-crossing detection uses a hysteresis threshold "
+        "of +/-4 LSB (ZC_HYST = 4 in adc_stats.sv). The adaptive-N system in adc_stats.sv "
+        "adjusts N to keep the total clock count in a target range (FREQ_CLK_TARGET_LO=8000 "
+        "to FREQ_CLK_TARGET_HI=50000 clocks), bounded by FREQ_N_MIN=32 and FREQ_N_MAX=16384."
     )
     pdf.body(
-        "At the window boundary, the accumulators are snapshotted and passed to the normalization "
-        "and CORDIC pipeline, while new accumulation begins immediately for the next window."
+        "At the window boundary, adc_stats pulses costas_window_done, which causes "
+        "phase_costas to snapshot the accumulators and pass them to the normalization pipeline. "
+        "Accumulation for the next window begins immediately. If the accumulator exceeds "
+        "FREQ_ACCUM_ABORT (500,000 clocks), adc_stats pulses costas_window_start instead, "
+        "which aborts the window without generating output."
+    )
+
+    pdf.subsection("2.3", "IDDR Channel Alignment")
+    pdf.body(
+        "The AD9627 ADC outputs I and Q channels in DDR format. The FPGA IDDR primitive in "
+        "SAME_EDGE mode causes channel B (Q) to arrive 1 sample late relative to channel A (I). "
+        "This is compensated by delaying sample_i by 1 clock in adc_stats.sv before feeding "
+        "it to the phase estimator:"
+    )
+    pdf.code(
+        "reg signed [11:0] sample_i_d1;\n"
+        "always @(posedge clk) sample_i_d1 <= sample_i;\n"
+        "\n"
+        "phase_costas u_phase_costas (\n"
+        "    .sample_i(sample_i_d1),  // delayed to align with late Q\n"
+        "    .sample_q(sample_q),\n"
+        "    ..."
+    )
+    pdf.body(
+        "Without this compensation, all phase readings have a constant offset of "
+        "360 * f_signal / f_sample degrees (e.g., +31.7 degrees at 11 MHz / 125 MSPS)."
     )
 
     # ======== 3. HILBERT FIR FILTER ========
@@ -176,358 +222,274 @@ def build():
     pdf.subsection("3.1", "Why a Hilbert Filter?")
     pdf.body(
         "The correlation method requires I_90[n], a copy of I[n] shifted by exactly 90 degrees. "
-        "The original implementation used a BRAM delay line of quarter_period samples. This "
-        "introduces a frequency-dependent error because:"
-    )
-    pdf.bullet("The quarter period is rounded to an integer number of samples.")
-    pdf.bullet("At high frequencies (e.g., 20.83 MHz at 125 MSPS), the quarter period is only "
-               "1.5 samples, which rounds to 1 or 2 -- introducing up to 30 degrees of error.")
-    pdf.bullet("At different frequencies, different quantization errors produce different phase biases, "
-               "making the measurement frequency-dependent (observed as ~12600 at 6.5 MHz, "
-               "~17100 at 10 MHz, ~25500 at 20.8 MHz in raw CORDIC units).")
-    pdf.body(
-        "A Hilbert transform FIR filter provides a true 90-degree phase shift at ALL frequencies "
-        "within its passband, with a fixed and known group delay [3][4]. This eliminates the "
-        "frequency dependence entirely."
+        "A BRAM delay line of quarter_period samples introduces frequency-dependent error because "
+        "the quarter period is rounded to an integer. A Hilbert transform FIR filter provides "
+        "a true 90-degree phase shift at ALL frequencies within its passband, with a fixed "
+        "and known group delay, eliminating frequency dependence."
     )
 
     pdf.subsection("3.2", "Filter Design: 15-Tap Type III FIR")
     pdf.body(
-        "The ideal discrete-time Hilbert transform has the impulse response:"
-    )
-    pdf.equation("h[n] = (2 / (pi * n))  for n odd,  0 for n even")
-    pdf.body(
-        "We use a 15-tap windowed (rectangular) truncation, which is a Type III FIR (odd length, "
-        "antisymmetric: h[n] = -h[N-1-n]). The non-zero coefficients, scaled by 2048 for "
-        "fixed-point implementation, are:"
+        "The ideal discrete-time Hilbert transform has the impulse response "
+        "h[n] = 2/(pi*n) for n odd, 0 for n even. We use a 15-tap windowed truncation "
+        "(Type III FIR: odd length, antisymmetric). Non-zero coefficients scaled by 2048:"
     )
     pdf.code(
-        "Tap    k (offset)   h_float       h_int (x2048)\n"
-        "---    ----------   -------       -------------\n"
-        " 0       -7         -0.0909        -186\n"
-        " 2       -5         -0.1273        -261\n"
-        " 4       -3         -0.2122        -435\n"
-        " 6       -1         -0.6366       -1304\n"
-        " 7        0          0.0000           0  (center)\n"
-        " 8       +1         +0.6366       +1304\n"
-        "10       +3         +0.2122        +435\n"
-        "12       +5         +0.1273        +261\n"
-        "14       +7         +0.0909        +186"
+        "Tap    k (offset)   h_float       h_int (x2048)   RTL param\n"
+        "---    ----------   -------       -------------   ---------\n"
+        " 0       -7         -0.0909        -186           H1 = 186\n"
+        " 2       -5         -0.1273        -261           H3 = 261\n"
+        " 4       -3         -0.2122        -435           H5 = 435\n"
+        " 6       -1         -0.6366       -1304           H7 = 1304\n"
+        " 7        0          0.0000           0           (center)\n"
+        " 8       +1         +0.6366       +1304           H7\n"
+        "10       +3         +0.2122        +435           H5\n"
+        "12       +5         +0.1273        +261           H3\n"
+        "14       +7         +0.0909        +186           H1"
     )
     pdf.body(
-        "All even-offset taps (h[1], h[3], h[5], ..., h[13]) are exactly zero. The antisymmetry "
-        "means only 4 unique multiplications are needed, using pre-addition of symmetric tap pairs."
+        "All even-offset taps are exactly zero. Antisymmetry means only 4 unique "
+        "multiplications are needed, using pre-addition of symmetric tap pairs."
     )
 
     pdf.subsection("3.3", "Group Delay and Signal Alignment")
     pdf.body(
-        "A linear-phase FIR of length N has a constant group delay of (N-1)/2 samples. For our "
-        "15-tap filter, this is 7 samples. Both the 'direct' I path (used for the X correlation arm) "
-        "and the Q signal must be delayed by the same 7 samples so that I_delayed, Hilbert(I), "
-        "and Q_delayed are all time-aligned to the same sample instant."
-    )
-    pdf.body(
-        "In RTL, this is implemented as:\n"
-        "  - I shift register: 15 taps (sr[0] newest, sr[14] oldest); center tap sr[7] = I_delayed.\n"
-        "  - Q delay line: 7-deep shift register; output q_del[6] = Q_delayed."
+        "A linear-phase FIR of length N has constant group delay (N-1)/2 samples. For 15 taps "
+        "this is 7 samples (GRP_DELAY=7). Both the direct I path and Q signal are delayed by "
+        "7 samples via shift registers so that I_delayed, Hilbert(I), Q_delayed, and "
+        "Hilbert(Q) are all time-aligned."
     )
 
     pdf.subsection("3.4", "DSP48 Efficient Implementation")
     pdf.body(
-        "The Xilinx DSP48E1 primitive supports a pre-adder before the multiplier [5]. Our design "
-        "exploits this by computing the antisymmetric differences first:"
+        "The Xilinx DSP48E1 pre-adder is exploited for the antisymmetric differences:"
     )
     pdf.code(
-        "d1 = sr[14] - sr[0]    // multiply by 186\n"
-        "d3 = sr[12] - sr[2]    // multiply by 261\n"
-        "d5 = sr[10] - sr[4]    // multiply by 435\n"
-        "d7 = sr[8]  - sr[6]    // multiply by 1304"
+        "diff1 = sr[14] - sr[0]   -> * H1 (186)\n"
+        "diff3 = sr[12] - sr[2]   -> * H3 (261)\n"
+        "diff5 = sr[10] - sr[4]   -> * H5 (435)\n"
+        "diff7 = sr[8]  - sr[6]   -> * H7 (1304)"
     )
     pdf.body(
-        "This uses 4 DSP48 slices total (one per product), with the pre-add fitting naturally "
-        "into the DSP48E1 A:B pre-adder path. The products are summed and right-shifted by 11 "
-        "(dividing by 2048) to produce the Hilbert-filtered output at full 12-bit precision."
+        "This uses 4 DSP48 slices per channel (8 total for I and Q Hilbert). Products are "
+        "summed into a 27-bit accumulator, right-shifted by 11 (divide by 2048), and "
+        "saturated to 12-bit signed."
     )
 
-    pdf.subsection("3.5", "Frequency Response Characteristics")
+    pdf.subsection("3.5", "Frequency Response")
     pdf.body(
-        "A 15-tap Hilbert FIR has a passband from approximately 0.04*fs to 0.46*fs [3]. At "
-        "fs = 125 MSPS, this corresponds to approximately 5 MHz to 57.5 MHz. Below ~5 MHz, "
-        "the magnitude response rolls off (the filter cannot pass DC), which slightly reduces "
-        "correlation amplitude but does NOT affect the phase measurement since both X and Y "
-        "arms are attenuated equally. In practice, measurements remain stable down to ~1.3 MHz "
-        "due to the long averaging window at low frequencies."
+        "A 15-tap Hilbert FIR has passband ~0.04*fs to ~0.46*fs. At 125 MSPS: ~5 MHz to "
+        "~57 MHz. Below 5 MHz the magnitude rolls off but does NOT affect phase measurement "
+        "since both X and Y arms are attenuated equally. Measurements remain stable down to "
+        "~1.3 MHz due to long averaging windows at low frequencies."
     )
 
-    # ======== 4. CORDIC ATAN2 ========
+    # ======== 4. NORMALIZATION AND OUTPUT ========
     pdf.add_page()
-    pdf.section("4", "CORDIC Arc-Tangent (atan2)")
+    pdf.section("4", "Normalization and X/Y Output")
 
-    pdf.subsection("4.1", "CORDIC Algorithm Overview")
+    pdf.subsection("4.1", "Why Normalize?")
     pdf.body(
-        "The CORDIC (COordinate Rotation DIgital Computer) algorithm computes trigonometric "
-        "functions using only shifts and additions [6][7]. In vectoring mode, it rotates an "
-        "input vector (X, Y) toward the positive X axis, accumulating the total rotation angle. "
-        "The accumulated angle is the atan2(Y, X) result."
-    )
-    pdf.body(
-        "Each iteration i performs:"
-    )
-    pdf.equation("X[i+1] = X[i] - d[i] * Y[i] * 2^(-i)")
-    pdf.equation("Y[i+1] = Y[i] + d[i] * X[i] * 2^(-i)")
-    pdf.equation("Z[i+1] = Z[i] - d[i] * atan(2^(-i))")
-    pdf.body(
-        "where d[i] = +1 if Y[i] < 0, else -1. After N iterations, Z converges to atan2(Y, X). "
-        "The coarse rotation stage handles inputs in all four quadrants by first rotating into "
-        "quadrant I/IV [6]."
+        "The correlation accumulators are 40 bits wide (ACC_W=40) to prevent overflow during "
+        "long measurement windows (up to 50,000 clocks). However, only the ratio Y/X matters "
+        "for phase. The normalization pipeline scales both X and Y to fit in 12-bit signed "
+        "range while preserving their ratio, enabling efficient 24-bit UDP transport."
     )
 
-    pdf.subsection("4.2", "Xilinx CORDIC IP Configuration")
+    pdf.subsection("4.2", "Two-Stage Pipeline")
+    pdf.body("Split into two registered stages to meet 125 MHz timing:")
+    pdf.bullet("Stage 5a: Compute |snap_x| and |snap_y| via conditional negation. "
+               "Select max(|X|, |Y|) = norm_max_abs.")
+    pdf.bullet("Stage 5b: Priority-encode the leading one of norm_max_abs via a 40-bit "
+               "cascaded ternary chain (bits [39] down to [11]) to produce a 6-bit "
+               "right-shift amount. This maps the largest accumulator into [0, 2047].")
     pdf.body(
-        "We use the Xilinx CORDIC IP v6.0 (cordic_0) with the following settings:"
-    )
-    pdf.bullet("Function: Arc Tan (vectoring mode)")
-    pdf.bullet("Architecture: Parallel (fully unrolled)")
-    pdf.bullet("Pipelining: Maximum (one result per clock after pipeline fill)")
-    pdf.bullet("Input width: 12 bits (signed fraction, -1.0 to +0.9995)")
-    pdf.bullet("Output width: 16 bits (phase in radians, signed fraction: -pi to +pi mapped to -1.0 to +1.0)")
-    pdf.bullet("Data format: SignedFraction")
-    pdf.bullet("Coarse rotation: Enabled (handles all four quadrants)")
-    pdf.bullet("Scale compensation: None (not needed for phase-only output)")
-    pdf.bullet("Flow control: NonBlocking (no backpressure)")
-    pdf.body(
-        "The input is packed as a 32-bit word: [31:16] = Y (sign-extended to 16 bits), "
-        "[15:0] = X (sign-extended to 16 bits). The output is a 16-bit signed phase where "
-        "the full-scale range [-32768, +32767] maps to [-pi, +pi] radians, or equivalently "
-        "[-180, +180] degrees."
+        "Finally (Stage 6): Apply the arithmetic right-shift to both X and Y, saturate "
+        "each to [-2048, +2047], and register the outputs as xy_x_out and xy_y_out."
     )
 
-    pdf.subsection("4.3", "Normalization Before CORDIC")
+    pdf.subsection("4.3", "Host-Side atan2")
     pdf.body(
-        "The correlation accumulators are 40 bits wide, but the CORDIC input is 12 bits. "
-        "A normalization pipeline scales the (snap_x, snap_y) pair to fit within the 12-bit "
-        "signed range while preserving the ratio Y/X (which determines the angle):"
+        "The host Python analyzer receives the 12-bit signed X and Y values "
+        "(sign-extended to 16-bit in the UDP packet) and computes:"
     )
-    pdf.bullet("Stage 1: Compute |snap_x| and |snap_y|, find the maximum.")
-    pdf.bullet("Stage 2: Priority-encode the leading one of the maximum to determine a right-shift amount.")
-    pdf.bullet("Stage 3: Apply the shift to both X and Y, then saturate to [-2048, +2047].")
+    pdf.code(
+        "import math\n"
+        "phase_deg = math.degrees(math.atan2(corr_y, corr_x))"
+    )
     pdf.body(
-        "This ensures the CORDIC always receives inputs with maximum dynamic range regardless "
-        "of the accumulator magnitudes, which vary with signal amplitude and window length."
+        "This gives full IEEE 754 double-precision atan2 with all four quadrants resolved. "
+        "No CORDIC IP is needed on the FPGA, saving logic resources and eliminating pipeline "
+        "latching artifacts that were observed with the Xilinx CORDIC IP."
     )
+
+    pdf.subsection("4.4", "Advantages Over FPGA CORDIC")
+    pdf.bullet("Zero FPGA resource usage for trigonometry (no CORDIC IP instantiation).")
+    pdf.bullet("Full double-precision result (vs 16-bit fixed-point CORDIC output).")
+    pdf.bullet("No pipeline latency or handshake complexity between CORDIC and output latch.")
+    pdf.bullet("Simpler RTL: fewer state machines, no cordic_pending flag logic.")
+    pdf.bullet("Debugging: raw X/Y visible in packets, allowing immediate verification of "
+               "correlation quality without ILA.")
 
     # ======== 5. PIPELINE STRUCTURE ========
     pdf.add_page()
     pdf.section("5", "Pipeline Structure and Timing")
-    pdf.body("The full pipeline from ADC input to phase output:")
+    pdf.body("The full pipeline from ADC input to X/Y output:")
     pdf.code(
-        "Stage 0:  I shift register load + Q delay line        [1 clk]\n"
-        "Stage 1a: Hilbert pre-add (diff registers)            [1 clk]\n"
-        "Stage 1b: Hilbert multiply (DSP48)                    [1 clk]\n"
-        "Stage 2:  Hilbert sum + saturation + register         [1 clk]\n"
-        "Stage 3:  Correlation multiply (I*Q, I90*Q)           [1 clk]\n"
-        "Stage 4:  Accumulate (runs for N cycles)              [N clks]\n"
-        "Stage 5:  Snapshot accumulators                       [1 clk]\n"
-        "Stage 6a: Abs + max detection                         [1 clk]\n"
-        "Stage 6b: Leading-one shift compute                   [1 clk]\n"
-        "Stage 7:  Shift + saturate + present to CORDIC        [1 clk]\n"
-        "CORDIC:   Pipelined atan2                             [~16 clks]\n"
-        "Output:   Latch phase_out                             [1 clk]"
+        "Clock  Stage  Operation\n"
+        "-----  -----  ---------\n"
+        "  0      0    DC-block + shift register load\n"
+        "  1      1a   Hilbert pre-add (antisymmetric differences)\n"
+        "  2      1b   Hilbert multiply (DSP48)\n"
+        "  3      2    Hilbert sum + saturate + register I90/Q90/I_del/Q_del\n"
+        "  4      3    Correlation multiply: I*Q, I90*Q, I90*Q90, I*Q90\n"
+        "  5      4    Accumulate X += I*Q + I90*Q90, Y += I90*Q - I*Q90\n"
+        "  ...         (runs for N zero-crossing cycles)\n"
+        "  N+5    4    Snapshot: snap_x, snap_y <- final accumulators\n"
+        "  N+6    5a   Absolute value + max selection\n"
+        "  N+7    5b   Leading-one detect (priority encode)\n"
+        "  N+8    6    Shift + saturate + output xy_x_out, xy_y_out, xy_valid"
     )
     pdf.body(
-        "Total latency from window_done pulse to phase_valid output is approximately 22 clock "
-        "cycles (125 MHz => 176 ns). This is negligible compared to the measurement window "
-        "of thousands of cycles."
-    )
-    pdf.body(
-        "Window control signals (window_done, window_start) are pipelined through a 5-stage "
-        "shift register to remain aligned with the data as it passes through the Hilbert FIR "
-        "and correlation multiply stages."
+        "The window_done and window_start pulses are pipelined through a 5-bit shift register "
+        "to arrive at the accumulator input exactly when the corresponding products are ready. "
+        "This ensures the final clock's products are included in the snapshot sum."
     )
 
-    # ======== 6. HOST-SIDE CONVERSION ========
+    pdf.subsection("5.1", "Latency Budget")
+    pdf.body(
+        "From window_done pulse to xy_valid output: 5 (pipeline) + 3 (normalization) = "
+        "8 clock cycles = 64 ns at 125 MHz. This is negligible compared to the measurement "
+        "window duration (typically 8,000-50,000 clocks = 64-400 us)."
+    )
+
+    # ======== 6. DC BLOCKING ========
     pdf.add_page()
-    pdf.section("6", "Host-Side Phase Conversion")
+    pdf.section("6", "DC Blocking Filter")
     pdf.body(
-        "The FPGA transmits the raw CORDIC output as a signed 32-bit integer (sign-extended "
-        "from 16 bits) in bytes [12:15] of the 16-byte stat packet. The host (Python analyzer) "
-        "converts to degrees:"
+        "A first-order IIR DC blocker removes any DC offset from both I and Q channels "
+        "before the Hilbert FIR and correlation. This prevents DC offsets from biasing "
+        "the accumulator towards zero angle."
     )
-    pdf.equation("phase_deg = cordic_raw * 180.0 / 32768.0")
+    pdf.body("Transfer function (z-domain):")
+    pdf.equation("H(z) = 1 - z^(-1) * (1 - 2^(-K))")
     pdf.body(
-        "This maps the full signed 16-bit range to [-180, +180] degrees, matching the Xilinx "
-        "CORDIC output convention where full-scale equals +/-pi radians [8]."
-    )
-
-    # ======== 7. THE 19-DEGREE CALIBRATION OFFSET ========
-    pdf.section("7", "The 19-Degree Calibration Correction")
-
-    pdf.subsection("7.1", "Observed Behavior")
-    pdf.body(
-        "After replacing the delay-line with the Hilbert FIR, the CORDIC phase output is stable "
-        "across frequency (1.3-40 MHz) to within +/-1 degree. However, it consistently reads "
-        "approximately 71 degrees rather than the expected 90 degrees for a true-quadrature IQ "
-        "pair. A +19 degree correction is applied in the host software to recover the expected value:"
-    )
-    pdf.code("cordic_phase_avg = circular_mean(batch_cordic_phases_deg) + 19.0")
-
-    pdf.subsection("7.2", "Sources of the Fixed Phase Offset")
-    pdf.body(
-        "The 19-degree (or equivalently, the 71-degree raw reading for a 90-degree input) offset "
-        "arises from the combination of several deterministic effects:"
+        "With DC_BLOCK_SHIFT=8 (K=8), the -3 dB corner is approximately "
+        "fs / (2*pi*2^K) = 125e6 / (2*pi*256) = 77.7 kHz. This is well below the "
+        "minimum signal frequency (~1.3 MHz) so signal attenuation is negligible."
     )
 
-    pdf.bold("(a) Hilbert FIR Gain < 1 at passband edges")
+    # ======== 7. RESOURCE USAGE ========
+    pdf.section("7", "FPGA Resource Usage")
+    pdf.body("Estimated resource usage for phase_costas (Kintex-7):")
+    pdf.table_row(["Resource", "Count", "Notes"], bold=True, fill=True)
+    pdf.table_row(["DSP48E1", "12", "8 Hilbert (4 per I/Q) + 4 correlation"])
+    pdf.table_row(["Flip-Flops", "~600", "Shift regs, pipeline, accumulators"])
+    pdf.table_row(["LUT", "~400", "Normalization, saturation, muxing"])
+    pdf.table_row(["BRAM", "0", "No block RAM needed"])
     pdf.body(
-        "A truncated 15-tap Hilbert filter does not have unity magnitude response at all "
-        "frequencies. The magnitude |H(f)| varies from about 0.92 at the passband center to "
-        "lower values near the edges [3][4]. When the Hilbert-filtered signal has slightly less "
-        "amplitude than the direct path, the atan2(Y, X) computation sees a ratio Y/X that is "
-        "slightly less than tan(phi), biasing the result toward 0. For a 90-degree input this "
-        "pulls the output below 90 degrees. However, since the magnitude response is relatively "
-        "flat across the usable passband, this bias is frequency-independent (constant offset)."
+        "Removing the CORDIC IP saves approximately 1 DSP48, ~200 FFs, and ~150 LUTs "
+        "that were previously used for the iterative rotation pipeline."
     )
 
-    pdf.bold("(b) Rectangular window truncation of the Hilbert filter")
+    # ======== 8. MEASURED RESULTS ========
+    pdf.add_page()
+    pdf.section("8", "Measured Results")
     pdf.body(
-        "Using a rectangular window (no tapering) on the 15-tap Hilbert kernel introduces Gibbs "
-        "phenomenon ripple in the magnitude response. The average magnitude across the passband "
-        "is less than 1.0 (approximately 0.95 for 15 taps with rectangular window [3]). This "
-        "contributes a few degrees of atan2 bias in the same direction as (a)."
+        "Measured phase accuracy with 11 MHz, 3 Vpp sinusoidal input, channel alignment "
+        "compensated (1-sample I delay for IDDR SAME_EDGE Q lag):"
+    )
+    pdf.table_row(["ARB Phase", "Y (dec)", "X (dec)", "atan2 (deg)", "Error"], bold=True, fill=True)
+    pdf.table_row(["40°", "+1337", "+1579", "40.3°", "+0.3°"])
+    pdf.table_row(["50°", "+1588", "+1322", "50.2°", "+0.2°"])
+    pdf.table_row(["60°", "+1792", "+1026", "60.2°", "+0.2°"])
+    pdf.table_row(["70°", "+1940", "+699", "70.2°", "+0.2°"])
+    pdf.table_row(["80°", "+2029", "+351", "80.2°", "+0.2°"])
+    pdf.table_row(["90°", "+1029", "-3", "90.2°", "+0.2°"])
+    pdf.table_row(["100°", "+2022", "-364", "100.2°", "+0.2°"])
+    pdf.table_row(["110°", "+1925", "-709", "110.3°", "+0.3°"])
+    pdf.body(
+        "Maximum error: 0.3 degrees across 70 degrees of phase sweep. "
+        "The systematic ~0.2 degree bias is within the Hilbert FIR quantization error "
+        "at 11 MHz (gain ~= 1.07 vs ideal 1.0)."
     )
 
-    pdf.bold("(c) CORDIC scaling gain")
+    # ======== 9. Vpp FREQUENCY CALIBRATION ========
+    pdf.add_page()
+    pdf.section("9", "Vpp Frequency Calibration")
     pdf.body(
-        "The CORDIC algorithm introduces a gain factor K = product(sqrt(1 + 2^(-2i))) over all "
-        "iterations, approximately 1.6468 [6][7]. In vectoring mode, both X and Y are scaled by "
-        "K, so the angle output is theoretically unaffected. However, our configuration uses "
-        "'No Scale Compensation', which means the magnitude output (unused) carries the gain but "
-        "the phase output should be correct. Any residual numerical effect from finite wordlength "
-        "in the CORDIC iterations (12-bit input, truncation rounding) can contribute a small "
-        "systematic offset of 1-3 degrees [8]."
+        "The measured peak-to-peak voltage exhibits a frequency-dependent attenuation "
+        "through the ADC signal chain (FMC connector, PCB traces, AD9627 sample-and-hold). "
+        "This is characterized by comparing FPGA-reported Vpp against a calibrated oscilloscope "
+        "at fixed 3 Vpp output from the UTG962 signal generator."
+    )
+    pdf.table_row(["Freq (MHz)", "Scope Vpp", "FPGA Vpp", "Ratio"], bold=True, fill=True)
+    pdf.table_row(["1.5", "3.10", "2.97", "1.044"])
+    pdf.table_row(["5", "3.10", "2.94", "1.054"])
+    pdf.table_row(["10", "3.10", "2.90", "1.069"])
+    pdf.table_row(["15", "3.10", "2.84", "1.092"])
+    pdf.table_row(["18", "3.10", "2.79", "1.111"])
+    pdf.table_row(["25", "3.04", "2.56", "1.188"])
+    pdf.table_row(["32", "2.90", "2.51", "1.155"])
+    pdf.table_row(["40", "2.72", "2.29", "1.188"])
+    pdf.body(
+        "A linear least-squares fit to the correction factor (scope/FPGA) vs frequency gives:"
+    )
+    pdf.equation("cal(f) = 1.0377 + 0.00409 * f_MHz")
+    pdf.body(
+        "This is applied in the Python host analyzer to all Vpp and V^2rms readings. "
+        "With calibration enabled, maximum residual error is 4.0% (at 25 MHz where the "
+        "signal generator itself begins to roll off), and most points are within 1%."
+    )
+    pdf.body(
+        "The calibration can be disabled with --no-vpp-cal or overridden with "
+        "--vpp-cal-a and --vpp-cal-b command-line flags."
     )
 
-    pdf.bold("(d) ADC analog front-end phase skew")
+    # ======== 10. PYTHON HOST INTERFACE ========
+    pdf.add_page()
+    pdf.section("10", "Python Host Interface")
     pdf.body(
-        "The AD9627 dual-channel ADC has a specified interchannel phase mismatch of up to "
-        "+/-0.5 degrees at 70 MHz [9]. At the frequencies of interest (1-40 MHz), this is smaller "
-        "but still contributes to the total offset. Additionally, the PCB trace lengths from the "
-        "signal source to each ADC input channel may differ slightly, introducing a fixed "
-        "time-of-flight difference that manifests as a constant phase offset."
-    )
-
-    pdf.bold("(e) Digital pipeline timing asymmetry")
-    pdf.body(
-        "The I channel passes through a 15-tap shift register and the Q channel through a "
-        "7-deep delay line. While designed to align at the center, any off-by-one in the "
-        "pipeline (e.g., from synthesis tool register duplication or retiming) introduces a "
-        "fixed 1-sample offset, which at the measurement frequency corresponds to a constant "
-        "angular offset: delta_phi = 360 * f_signal / f_sample degrees per sample of misalignment. "
-        "For signals well below Nyquist, this is a small constant."
-    )
-
-    pdf.subsection("7.3", "Why the Offset is Frequency-Independent")
-    pdf.body(
-        "The critical insight is that ALL of the above effects produce fixed (frequency-independent) "
-        "biases. The Hilbert FIR eliminates the one mechanism that was frequency-dependent (the "
-        "integer quarter-period quantization). What remains are analog path mismatches, digital "
-        "pipeline alignment offsets, and filter gain effects -- all of which are constant across "
-        "the passband."
-    )
-    pdf.body(
-        "This is why a single scalar calibration correction (+19 degrees) is sufficient to "
-        "correct the measurement across the entire 1.3-40 MHz operating range."
-    )
-
-    pdf.subsection("7.4", "Calibration Procedure")
-    pdf.body(
-        "The calibration constant is determined empirically by applying a known-phase reference "
-        "signal (0-degree or 90-degree IQ pair from a signal generator) at multiple frequencies "
-        "and measuring the average offset. The correction is applied as a post-subtraction in "
-        "the host Python software, which allows it to be adjusted without FPGA resynthesis:"
+        "The host-side decoder (adc_stats_analyzer.py) processes the 16-byte stat packets:"
     )
     pdf.code(
-        "# In _finalize_batch_metrics():\n"
-        "cordic_phase_avg = circular_mean(batch_cordic_phases_deg) + 19.0"
+        "@staticmethod\n"
+        "def _decode_corr_xy(stat_bytes: bytearray) -> tuple:\n"
+        "    raw_y = (stat_bytes[11] << 8) | stat_bytes[12]\n"
+        "    if raw_y >= 0x8000:\n"
+        "        raw_y -= 0x10000\n"
+        "    raw_x = (stat_bytes[13] << 8) | stat_bytes[14]\n"
+        "    if raw_x >= 0x8000:\n"
+        "        raw_x -= 0x10000\n"
+        "    return raw_y, raw_x"
+    )
+    pdf.body("Phase computation:")
+    pdf.code(
+        "corr_y, corr_x = self._decode_corr_xy(stat_bytes)\n"
+        "if corr_y != 0 or corr_x != 0:\n"
+        "    phase_deg = math.degrees(math.atan2(corr_y, corr_x))"
     )
     pdf.body(
-        "For a multi-element beamforming array, each channel pair would have its own calibration "
-        "constant determined during array characterization."
+        "Additional filtering includes EMA smoothing, jump rejection, and optional "
+        "pi-ambiguity resolution for wrapping near +/-180 degrees."
     )
 
-    # ======== 8. COMPARISON WITH PREVIOUS APPROACH ========
+    # ======== 11. REFERENCES ========
     pdf.add_page()
-    pdf.section("8", "Comparison: Delay-Line vs Hilbert FIR")
-
-    pdf.table_row([
-        (58, "Property"), (58, "Delay-Line (old)"), (58, "Hilbert FIR (new)")
-    ], bold=True, fill=True)
-    pdf.table_row([
-        (58, "90-deg method"), (58, "BRAM circular buffer"), (58, "15-tap FIR filter")
-    ])
-    pdf.table_row([
-        (58, "Freq dependence"), (58, "Severe (integer quantization)"), (58, "None (broadband)")
-    ])
-    pdf.table_row([
-        (58, "DSP48 usage"), (58, "0 (BRAM only)"), (58, "4 (pre-add + mult)")
-    ])
-    pdf.table_row([
-        (58, "BRAM usage"), (58, "1 (1024-deep delay)"), (58, "0")
-    ])
-    pdf.table_row([
-        (58, "Requires freq info?"), (58, "Yes (quarter_period divider)"), (58, "No")
-    ])
-    pdf.table_row([
-        (58, "Pipeline latency"), (58, "2 clocks"), (58, "5 clocks")
-    ])
-    pdf.table_row([
-        (58, "Phase accuracy"), (58, "Freq-dependent bias 10-50 deg"), (58, "Constant +/-1 deg")
-    ])
-    pdf.ln(4)
-    pdf.body(
-        "The Hilbert FIR approach trades 4 DSP48 slices (of 840 available on xc7k325t) for "
-        "eliminating one BRAM and the 16-clock sequential divider, while providing a "
-        "fundamentally more accurate phase measurement."
-    )
-
-    # ======== 9. REFERENCES ========
-    pdf.add_page()
-    pdf.section("9", "References")
-
-    pdf.ref_entry("[1]", "J. P. Costas, \"Synchronous Communications,\" Proc. IRE, vol. 44, "
-                  "no. 12, pp. 1713-1718, Dec. 1956. doi:10.1109/JRPROC.1956.275063")
-    pdf.ref_entry("[2]", "F. M. Gardner, \"Phaselock Techniques,\" 3rd ed., John Wiley & Sons, "
-                  "2005, Ch. 10: Costas Loop. ISBN: 978-0-471-43063-6")
-    pdf.ref_entry("[3]", "A. V. Oppenheim and R. W. Schafer, \"Discrete-Time Signal Processing,\" "
-                  "3rd ed., Pearson, 2010, Sec. 12.5: Hilbert Transform Relations. "
-                  "ISBN: 978-0-13-198842-2")
-    pdf.ref_entry("[4]", "S. L. Marple Jr., \"Computing the Discrete-Time Analytic Signal via FFT,\" "
-                  "IEEE Trans. Signal Process., vol. 47, no. 9, pp. 2600-2603, Sep. 1999. "
-                  "doi:10.1109/78.782222")
-    pdf.ref_entry("[5]", "Xilinx, \"7 Series DSP48E1 Slice User Guide,\" UG479, v1.11, 2018. "
-                  "Sec. Pre-Adder: allows A +/- D before multiplier for symmetric FIR. "
-                  "Available: https://docs.amd.com/v/u/en-US/ug479_7Series_DSP48E1")
-    pdf.ref_entry("[6]", "J. E. Volder, \"The CORDIC Trigonometric Computing Technique,\" IRE Trans. "
-                  "Electronic Computers, vol. EC-8, no. 3, pp. 330-334, Sep. 1959. "
-                  "doi:10.1109/TEC.1959.5222693")
-    pdf.ref_entry("[7]", "R. Andraka, \"A Survey of CORDIC Algorithms for FPGA Based Computers,\" "
-                  "Proc. ACM/SIGDA 6th Int. Symp. FPGAs, pp. 191-200, 1998. "
-                  "doi:10.1145/275107.275139")
-    pdf.ref_entry("[8]", "Xilinx, \"CORDIC v6.0 LogiCORE IP Product Guide,\" PG105, 2022. "
-                  "Sec. ArcTan Function, Output Format. "
-                  "Available: https://docs.amd.com/v/u/en-US/pg105-cordic")
-    pdf.ref_entry("[9]", "Analog Devices, \"AD9627 Dual 12-Bit, 150 MSPS/210 MSPS A/D Converter "
-                  "Data Sheet,\" Rev. B, 2014. Interchannel Phase Matching specification. "
-                  "Available: https://www.analog.com/media/en/technical-documentation/data-sheets/AD9627.pdf")
-    pdf.ref_entry("[10]", "Xilinx, \"Kintex-7 FPGAs Data Sheet: DC and AC Switching Characteristics,\" "
-                  "DS182, v2.18, 2022. DSP48E1 timing specifications. "
-                  "Available: https://docs.amd.com/v/u/en-US/ds182_Kintex_7_Data_Sheet")
+    pdf.section("11", "References")
+    pdf.ref_entry("[1]", "J.P. Costas, 'Synchronous Communications', Proc. IRE, 1956.")
+    pdf.ref_entry("[2]", "F.M. Gardner, 'Phaselock Techniques', 3rd ed., Wiley, 2005.")
+    pdf.ref_entry("[3]", "A.V. Oppenheim & R.W. Schafer, 'Discrete-Time Signal Processing', "
+                  "3rd ed., Pearson, 2009. Ch. 12: Hilbert Transform.")
+    pdf.ref_entry("[4]", "S.L. Marple, 'Computing the Discrete-Time Analytic Signal via FFT', "
+                  "IEEE Trans. Signal Processing, 1999.")
+    pdf.ref_entry("[5]", "Xilinx UG479: 7 Series DSP48E1 Slice User Guide.")
 
     # ======== OUTPUT ========
-    out_path = pathlib.Path(__file__).parent / "costas_phase_estimator.pdf"
+    out_dir = pathlib.Path(__file__).resolve().parent
+    out_path = out_dir / "costas_phase_estimator.pdf"
     pdf.output(str(out_path))
     print(f"Generated: {out_path}")
-    return out_path
 
 
 if __name__ == "__main__":

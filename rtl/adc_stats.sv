@@ -27,7 +27,8 @@
  *   [4:7]  iq_delay_sum (unsigned 32-bit, clocks from I ZC to Q ZC, summed over N)
  *   [8:9]  total_clk_count (16-bit)
  *   [10:11] n_cycles (16-bit)
- *   [12:15] cordic_phase (signed 32-bit, atan2(sum_Q, sum_I) over N-cycle window)
+ *   [12:13] cordic_y (signed 16-bit, correlation Y for host atan2)
+ *   [14:15] cordic_x (signed 16-bit, correlation X for host atan2)
  */
 
 `timescale 1ns / 1ps
@@ -58,7 +59,7 @@ module adc_stats #(
 );
 
     // ---- Constants --------------------------------------------------------
-    localparam signed [11:0] ZC_HYST = 12'sd4;
+    localparam signed [11:0] ZC_HYST = 12'sd16;
 
     // ---- Offset-binary <-> signed (MSB flip) ------------------------------
     wire signed [11:0] sample_i = {~adc1_data_a_d0[11], adc1_data_a_d0[10:0]};
@@ -71,7 +72,7 @@ module adc_stats #(
     // ---- Output packet ----------------------------------------------------
     localparam [7:0] SYNC_BYTE = 8'hA7;
     reg [7:0] packet_buf [0:15];
-    reg [4:0] packet_byte_idx;
+    reg [3:0] packet_byte_idx;
     reg       packet_valid;
     reg       measurement_ready;           // pulse: new measurement to pack
 
@@ -102,10 +103,14 @@ module adc_stats #(
     reg [31:0]        latched_iq_delay;       // latched at measurement boundary
 
     // ---- Costas correlation phase estimator ----------------------------------
-    reg        costas_window_done;        // pulse: end window, trigger CORDIC
+    reg        costas_window_done;        // pulse: end window
     reg        costas_window_start;       // pulse: reset accumulators (abort)
-    wire signed [31:0] costas_phase_out;
-    wire               costas_phase_valid;
+    wire signed [11:0] costas_xy_x, costas_xy_y;
+    wire               costas_xy_valid;
+
+    // Compensate IDDR SAME_EDGE 1-sample Q lag: delay I by 1 clock to align.
+    reg signed [11:0] sample_i_d1;
+    always @(posedge clk) sample_i_d1 <= sample_i;
 
     phase_costas #(
         .SAMPLE_W        (12),
@@ -113,18 +118,22 @@ module adc_stats #(
     ) u_phase_costas (
         .clk                    (clk),
         .rst                    (rst),
-        .sample_i               (sample_i),
+        .sample_i               (sample_i_d1),
         .sample_q               (sample_q),
         .window_start           (costas_window_start),
         .window_done            (costas_window_done),
-        .phase_out              (costas_phase_out),
-        .phase_valid            (costas_phase_valid)
+        .xy_x_out               (costas_xy_x),
+        .xy_y_out               (costas_xy_y),
+        .xy_valid               (costas_xy_valid)
     );
 
     // ---- Packet packing intermediates ----------------------------------------
     reg        [11:0] pk_pos_code, pk_neg_code;
 
-    (* dont_touch = "true" *) reg  signed [31:0] latched_cordic_phase;   // latched from Costas estimator
+    reg  signed [15:0] latched_cordic_y;   // raw Y for Python atan2
+    reg  signed [15:0] latched_cordic_x;   // raw X for Python atan2
+    reg                              zc_snapshot_pending;                  // ZC-derived stats latched and waiting
+    reg                              cordic_snapshot_pending;              // Costas phase latched and waiting
 
     // =======================================================================
     always @(posedge clk) begin
@@ -132,7 +141,7 @@ module adc_stats #(
             packet_valid          <= 1'b0;
             measurement_ready     <= 1'b0;
             m_axis_tvalid         <= 1'b0;
-            packet_byte_idx       <= 5'd0;
+            packet_byte_idx       <= 4'd0;
             prev_sample_i         <= 12'sd0;
             prev_sample_q         <= 12'sd0;
             zc_period_counter     <= 16'd1;
@@ -154,7 +163,10 @@ module adc_stats #(
             latched_iq_delay      <= 32'd0;
             costas_window_done    <= 1'b0;
             costas_window_start   <= 1'b0;
-            latched_cordic_phase  <= 32'sd0;
+            latched_cordic_y    <= 16'sd0;
+            latched_cordic_x    <= 16'sd0;
+            zc_snapshot_pending   <= 1'b0;
+            cordic_snapshot_pending <= 1'b0;
         end else begin
 
             measurement_ready   <= 1'b0;   // default: single-cycle pulse
@@ -211,6 +223,7 @@ module adc_stats #(
                         iq_delay_accum      <= 32'd0;
                         run_pk_pos       <= -12'sd2048;
                         run_pk_neg       <=  12'sd2047;
+                        zc_snapshot_pending <= 1'b1;
 
                         // Signal Costas correlator: end of window
                         costas_window_done <= 1'b1;
@@ -257,10 +270,18 @@ module adc_stats #(
                     zc_period_counter <= zc_period_counter + 1;
             end
 
-            // Latch Costas phase result when ready
-            if (costas_phase_valid) begin
-                latched_cordic_phase <= costas_phase_out;
-                measurement_ready    <= 1'b1;
+            // Latch raw X/Y when Costas estimator outputs (for Python atan2)
+            if (costas_xy_valid) begin
+                latched_cordic_y <= {{4{costas_xy_y[11]}}, costas_xy_y};
+                latched_cordic_x <= {{4{costas_xy_x[11]}}, costas_xy_x};
+                cordic_snapshot_pending <= 1'b1;
+            end
+
+            // Raise packet-ready pulse only after both measurement domains are latched.
+            if (zc_snapshot_pending && cordic_snapshot_pending && !packet_valid) begin
+                measurement_ready       <= 1'b1;
+                zc_snapshot_pending     <= 1'b0;
+                cordic_snapshot_pending <= 1'b0;
             end
 
             // ===== Pack and emit packet when measurement completes =========
@@ -280,13 +301,13 @@ module adc_stats #(
                 packet_buf[9]  <= measured_clk_count[7:0];
                 packet_buf[10] <= measured_cycles_count[15:8];
                 packet_buf[11] <= measured_cycles_count[7:0];
-                packet_buf[12] <= latched_cordic_phase[31:24];
-                packet_buf[13] <= latched_cordic_phase[23:16];
-                packet_buf[14] <= latched_cordic_phase[15:8];
-                packet_buf[15] <= latched_cordic_phase[7:0];
+                packet_buf[12] <= latched_cordic_y[15:8];
+                packet_buf[13] <= latched_cordic_y[7:0];
+                packet_buf[14] <= latched_cordic_x[15:8];
+                packet_buf[15] <= latched_cordic_x[7:0];
 
                 packet_valid    <= 1'b1;
-                packet_byte_idx <= 5'd0;
+                packet_byte_idx <= 4'd0;
             end
 
             // ===== Output AXIS bytes =======================================
@@ -294,9 +315,9 @@ module adc_stats #(
                 m_axis_tvalid <= 1'b1;
                 m_axis_tdata  <= packet_buf[packet_byte_idx];
                 if (m_axis_tready) begin
-                    if (packet_byte_idx == 5'd15) begin
+                    if (packet_byte_idx == 4'd15) begin
                         packet_valid    <= 1'b0;
-                        packet_byte_idx <= 5'd0;
+                        packet_byte_idx <= 4'd0;
                     end else begin
                         packet_byte_idx <= packet_byte_idx + 1'd1;
                     end

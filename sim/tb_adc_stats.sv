@@ -27,7 +27,7 @@ module tb_adc_stats;
 
     longint unsigned sample_idx;
 
-    logic [7:0] pkt [0:15];
+    logic [7:0] pkt [0:13];
     int pkt_idx;
 
     int case_frame_counter;
@@ -80,6 +80,14 @@ module tb_adc_stats;
         end
     endfunction
 
+    function automatic int signed be16s(input logic [7:0] b0, input logic [7:0] b1);
+        logic [15:0] raw;
+        begin
+            raw = {b0, b1};
+            be16s = $signed(raw);
+        end
+    endfunction
+
     function automatic int unsigned be32u(
         input logic [7:0] b0,
         input logic [7:0] b1,
@@ -121,7 +129,7 @@ module tb_adc_stats;
         int unsigned iq_delay_sum;
         int unsigned total_clk_count;
         int unsigned n_cycles;
-        int signed   cordic_phase_sum;
+        int signed   cordic_phase;
         real         phase_zc_deg;
         real         phase_zc_wrapped_deg;
         real         phase_cordic_deg;
@@ -135,7 +143,7 @@ module tb_adc_stats;
             iq_delay_sum     = be32u(pkt[4],  pkt[5],  pkt[6],  pkt[7]);
             total_clk_count  = be16 (pkt[8],  pkt[9]);
             n_cycles         = be16 (pkt[10], pkt[11]);
-            cordic_phase_sum = be32s(pkt[12], pkt[13], pkt[14], pkt[15]);
+            cordic_phase = be16s(pkt[12], pkt[13]);
 
             if (total_clk_count > 0)
                 phase_zc_deg = 360.0 * $itor(iq_delay_sum) / $itor(total_clk_count);
@@ -148,7 +156,7 @@ module tb_adc_stats;
             while (phase_zc_wrapped_deg < -180.0)
                 phase_zc_wrapped_deg = phase_zc_wrapped_deg + 360.0;
 
-            phase_cordic_deg = $itor(cordic_phase_sum) * 180.0 / 32768.0;
+            phase_cordic_deg = $itor(cordic_phase) * 180.0 / 32768.0;
 
             phase_cordic_wrapped_deg = phase_cordic_deg;
             while (phase_cordic_wrapped_deg >= 180.0)
@@ -267,7 +275,7 @@ module tb_adc_stats;
             pkt_idx <= 0;
         end else if (m_axis_tvalid && m_axis_tready) begin
             pkt[pkt_idx] = m_axis_tdata;
-            if (pkt_idx == 15) begin
+            if (pkt_idx == 13) begin
                 pkt_idx <= 0;
                 process_frame();
             end else begin
