@@ -422,7 +422,6 @@ wire [7:0] iq_codec_tdata;
 wire       iq_codec_tvalid;
 wire       iq_codec_tready;
 wire       iq_codec_tlast;
-(* mark_debug = "true" *) 
 (* mark_debug = "true" *) wire [7:0] adc_rx_axis_tdata;
 (* mark_debug = "true" *) wire       adc_rx_axis_tvalid;
 (* mark_debug = "true" *) wire       adc_rx_axis_tready;
@@ -439,12 +438,16 @@ wire [13:0] dac2_l;
 wire       dac1_dco_buf;
 wire       dac2_dco_buf;
 wire       dac_tone_mode;
+(* mark_debug = "true" *)
+wire       qpsk_mode;
 wire [31:0] tone_pinc;
 wire [4:0] dac1_delay_reg;
 wire [4:0] dac2_delay_reg;
 wire       dac_delay_apply_toggle_reg;
 wire [7:0] dac_spi_read_addr_reg;
 wire       dac_spi_read_toggle_reg;
+wire [31:0] corr_threshold_reg;
+wire [2:0] carrier_phase_offset_reg;
 wire [11:0] dac_ctrl_sync;
 wire [4:0] dac1_delay_spi;
 wire [4:0] dac2_delay_spi;
@@ -463,11 +466,15 @@ wire [9:0] dac_spi_read_status_sync;
 wire [7:0] dac_spi_read_data_reg;
 wire       dac_spi_read_done_toggle_reg;
 wire       dac_spi_read_busy_reg;
+(* mark_debug = "true" *) 
 wire       stream_enable_reg;
-wire [7:0] rx_ring_buffer_tdata;
-wire       rx_ring_buffer_tvalid;
-wire       rx_ring_buffer_tready;
-wire       rx_ring_buffer_tlast;
+(* mark_debug = "true" *) wire   [7:0] rx_ring_buffer_tdata;
+(* mark_debug = "true" *) wire       rx_ring_buffer_tvalid;
+(* mark_debug = "true" *) wire       rx_ring_buffer_tready;
+(* mark_debug = "true" *) wire       rx_ring_buffer_tlast;
+// wire       rx_ring_buffer_tvalid;
+// wire       rx_ring_buffer_tready;
+// wire       rx_ring_buffer_tlast;
 
 ethernet_subsystem #(
     .TARGET("XILINX")
@@ -509,6 +516,7 @@ ethernet_subsystem (
     .uart_rts(UART_RTS),
     .uart_cts(uart_cts_int),
     .reg_tone_mode(dac_tone_mode),
+    .reg_qpsk_mode(qpsk_mode),
     .reg_stream_enable(stream_enable_reg),
     .o_reg_tone_pinc(tone_pinc),
     .reg_dac1_delay(dac1_delay_reg),
@@ -519,6 +527,8 @@ ethernet_subsystem (
     .dac_spi_read_data(dac_spi_read_data_reg),
     .dac_spi_read_busy(dac_spi_read_busy_reg),
     .dac_spi_read_done_toggle(dac_spi_read_done_toggle_reg),
+    .reg_corr_threshold(corr_threshold_reg),
+    .reg_carrier_phase_offset(carrier_phase_offset_reg),
 
     .m_axis_rpi_rx_tdata(rpi_ingress_tdata),
     .m_axis_rpi_rx_tvalid(rpi_ingress_tvalid),
@@ -568,6 +578,7 @@ iq_codec_loop iq_codec_loop_inst (
     .i_dac1_clk(dac1_dco_buf),
     .i_dac2_clk(dac2_dco_buf),
     .i_tone_mode(dac_tone_mode),
+    .i_qpsk_mode(qpsk_mode),
     .i_tone_pinc(tone_pinc),
     .i_s_axis_tdata(tx_ring_buffer_tdata),
     .i_s_axis_tvalid(tx_ring_buffer_tvalid),
@@ -713,6 +724,7 @@ wire [11:0] adc1_data;
 wire [11:0] adc2_data;
 wire [11:0] adc1_data_a_d0;
 wire [11:0] adc1_data_b_d0;
+wire [11:0] adc2_data_a_d0;
 wire adc1_clk;
 wire adc1_rst_int;
 sync_reset #(.N(2)) adc1_rst_sync (
@@ -746,7 +758,56 @@ adc_top adc_top_inst (
     .adc2_data(adc2_data),
     .adc1_clk(adc1_clk),
     .adc1_data_a_d0(adc1_data_a_d0),
-	.adc1_data_b_d0(adc1_data_b_d0)
+	.adc1_data_b_d0(adc1_data_b_d0),
+    .adc2_data_a_d0(adc2_data_a_d0)
+);
+
+// High-pass filter: reject kHz-range LO leakage, pass 5-40 MHz tones
+// Cutoff ≈ 311 kHz at 125 MS/s (SHIFT=6)
+// HPF operates on signed data; convert offset-binary -> signed at input,
+// then signed -> offset-binary at output so adc_stats sees normal format.
+wire signed [11:0] hpf_in_a  = {~adc1_data_a_d0[11], adc1_data_a_d0[10:0]};
+wire signed [11:0] hpf_in_b  = {~adc1_data_b_d0[11], adc1_data_b_d0[10:0]};
+(* mark_debug = "true" *)
+wire signed [11:0] hpf_out_a;
+(* mark_debug = "true" *)
+wire signed [11:0] hpf_out_b;
+wire [11:0] adc1_data_a_hp = {~hpf_out_a[11], hpf_out_a[10:0]}; // back to offset-binary
+wire [11:0] adc1_data_b_hp = {~hpf_out_b[11], hpf_out_b[10:0]};
+
+hpf_iir_duo #(
+    .SAMPLE_W (12),
+    .SHIFT    (4)
+) u_hpf (
+    .clk   (adc1_clk),
+    .rst   (adc1_rst_int),
+    .in_a  (hpf_in_a),
+    .out_a (hpf_out_a),
+    .in_b  (hpf_in_b),
+    .out_b (hpf_out_b)
+);
+
+// Separate DC-block for the QPSK demodulator. The SHIFT=4 filter above has a
+// ~1.9 MHz cutoff, which decays a held QPSK symbol to 22% within one 192 ns
+// symbol and erases multi-symbol runs entirely. SHIFT=9 puts the cutoff at
+// ~60 kHz, far below the 5.2 MBd symbol rate, so NRZ levels survive intact.
+// Superseded by qpsk_rx_downmix (below), which now feeds qpsk_rx_demod
+// directly from the wideband hpf_out_a/b; kept only for baseband fallback.
+(* mark_debug = "true" *)
+wire signed [11:0] qpsk_hpf_out_a;
+(* mark_debug = "true" *)
+wire signed [11:0] qpsk_hpf_out_b;
+
+hpf_iir_duo #(
+    .SAMPLE_W (12),
+    .SHIFT    (9)
+) u_hpf_qpsk (
+    .clk   (adc1_clk),
+    .rst   (adc1_rst_int),
+    .in_a  (hpf_in_a),
+    .out_a (qpsk_hpf_out_a),
+    .in_b  (hpf_in_b),
+    .out_b (qpsk_hpf_out_b)
 );
 
 // ADC Statistics Module
@@ -759,13 +820,105 @@ wire       adc_stats_tready;
 adc_stats adc_stats_inst (
     .clk(adc1_clk),
     .rst(adc1_rst_int),
-    .adc1_data_a_d0(adc1_data_a_d0),
-    .adc1_data_b_d0(adc1_data_b_d0),
+    .adc1_data_a_d0(adc1_data_a_hp),
+    .adc1_data_b_d0(adc1_data_b_hp),
     .m_axis_tdata(adc_stats_tdata),
     .m_axis_tvalid(adc_stats_tvalid),
     .m_axis_tready(adc_stats_tready)
 );
 
+// ──────────────────────────────────────────────────────────────────────
+// QPSK RX Demodulator
+// ──────────────────────────────────────────────────────────────────────
+// Q-channel: ADC2 data crosses from adc2_clk → adc1_clk (same freq, minimal skew)
+reg [11:0] adc2_data_sync1, adc2_data_sync2;
+always @(posedge adc1_clk) begin
+    adc2_data_sync1 <= adc2_data_a_d0;
+    adc2_data_sync2 <= adc2_data_sync1;
+end
+
+// HPF for Q channel (same parameters as I channel)
+wire signed [11:0] hpf_q_in   = {~adc2_data_sync2[11], adc2_data_sync2[10:0]};
+wire signed [11:0] hpf_q_out;
+
+hpf_iir_duo #(
+    .SAMPLE_W (12),
+    .SHIFT    (4)
+) u_hpf_q (
+    .clk   (adc1_clk),
+    .rst   (adc1_rst_int),
+    .in_a  (hpf_q_in),
+    .out_a (hpf_q_out),
+    .in_b  (12'sd0),       // unused second channel
+    .out_b ()
+);
+
+// CDC for qpsk_mode into ADC clock domain
+(* mark_debug = "true" *)
+reg qpsk_mode_adc_ff1, qpsk_mode_adc_ff2;
+always @(posedge adc1_clk) begin
+    if (adc1_rst_int) begin
+        qpsk_mode_adc_ff1 <= 1'b0;
+        qpsk_mode_adc_ff2 <= 1'b0;
+    end else begin
+        qpsk_mode_adc_ff1 <= qpsk_mode;
+        qpsk_mode_adc_ff2 <= qpsk_mode_adc_ff1;
+    end
+end
+
+// CDC for corr_threshold into ADC clock domain (slow-changing, register twice)
+reg [31:0] corr_thresh_adc_ff1, corr_thresh_adc_ff2;
+always @(posedge adc1_clk) begin
+    if (adc1_rst_int) begin
+        corr_thresh_adc_ff1 <= 32'd50000;
+        corr_thresh_adc_ff2 <= 32'd50000;
+    end else begin
+        corr_thresh_adc_ff1 <= corr_threshold_reg;
+        corr_thresh_adc_ff2 <= corr_thresh_adc_ff1;
+    end
+end
+
+// CDC for carrier_phase_offset into ADC clock domain (slow-changing, register twice)
+reg [2:0] carrier_phase_adc_ff1, carrier_phase_adc_ff2;
+always @(posedge adc1_clk) begin
+    if (adc1_rst_int) begin
+        carrier_phase_adc_ff1 <= 3'd0;
+        carrier_phase_adc_ff2 <= 3'd0;
+    end else begin
+        carrier_phase_adc_ff1 <= carrier_phase_offset_reg;
+        carrier_phase_adc_ff2 <= carrier_phase_adc_ff1;
+    end
+end
+
+(* mark_debug = "true" *)
+wire signed [11:0] qpsk_downmix_i;
+(* mark_debug = "true" *)
+wire signed [11:0] qpsk_downmix_q;
+
+qpsk_rx_downmix qpsk_rx_downmix_inst (
+    .i_clk(adc1_clk),
+    .i_rst(adc1_rst_int),
+    .i_enable(qpsk_mode_adc_ff2),
+    .i_phase_offset(carrier_phase_adc_ff2),
+    .i_sample_i(hpf_out_a),
+    .i_sample_q(hpf_out_b),
+    .o_sample_i(qpsk_downmix_i),
+    .o_sample_q(qpsk_downmix_q)
+);
+
+(* mark_debug = "true" *)
+wire [7:0]  qpsk_rx_tdata;
+(* mark_debug = "true" *)
+wire        qpsk_rx_tvalid;
+wire        qpsk_rx_tlast;
+(* mark_debug = "true" *)
+wire        qpsk_rx_frame_detected;
+(* mark_debug = "true" *)
+wire        qpsk_rx_frame_done;
+(* mark_debug = "true" *)
+wire [1:0]  qpsk_rx_phase_rot;
+(* mark_debug = "true" *)
+wire [23:0] qpsk_rx_corr_mag;
 // FIFO to cross clock domain (adc1_clk -> clk_int)
 (* mark_debug = "true" *) wire [7:0]  adc_fifo_w_data;
 (* mark_debug = "true" *) wire        adc_fifo_w_valid;
@@ -778,7 +931,32 @@ adc_stats adc_stats_inst (
 (* mark_debug = "true" *) wire       adc_rx_axis_hs;
 (* mark_debug = "true" *) wire       adc_rx_axis_last_beat;
 
+qpsk_rx_demod #(
+    .SAMPLES_PER_SYMBOL(24),
+    .PAYLOAD_BYTES(32),
+    .CORR_THRESHOLD(50000)
+) qpsk_rx_demod_inst (
+    .i_clk(adc1_clk),
+    .i_rst(adc1_rst_int),
+    .i_sample_i(qpsk_downmix_i),  // I channel: ADC1 ch A, down-mixed from IF carrier
+    .i_sample_q(qpsk_downmix_q),  // Q channel: ADC1 ch B, down-mixed from IF carrier
+    .i_sample_valid(qpsk_mode_adc_ff2),
+    .i_corr_threshold(corr_thresh_adc_ff2[23:0]),
+    .o_m_axis_tdata(qpsk_rx_tdata),
+    .o_m_axis_tvalid(qpsk_rx_tvalid),
+    .i_m_axis_tready(!adc_fifo_w_almost_full),
+    .o_m_axis_tlast(qpsk_rx_tlast),
+    .o_frame_detected(qpsk_rx_frame_detected),
+    .o_frame_done(qpsk_rx_frame_done),
+    .o_phase_rot(qpsk_rx_phase_rot),
+    .o_corr_mag(qpsk_rx_corr_mag)
+);
+
+
+
 localparam [10:0] ADC_RX_FRAME_BYTES = 11'd512;
+localparam [10:0] QPSK_RX_FRAME_BYTES = 11'd32;
+wire [10:0] rx_frame_size = qpsk_mode ? QPSK_RX_FRAME_BYTES : ADC_RX_FRAME_BYTES;
 localparam DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE = 1'b0;
 
 reg [7:0] adc_fifo_w_data_dbg;
@@ -804,10 +982,16 @@ always @(posedge adc1_clk) begin
     end
 end
 
-// Wire adc_stats output directly to FIFO write port
-assign adc_fifo_w_data = DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE ? adc_fifo_w_data_dbg : adc_stats_tdata;
-assign adc_fifo_w_valid = DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE ? !adc_fifo_w_almost_full : (stream_enable_reg ? adc_stats_tvalid : 1'b0);
-assign adc_stats_tready = DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE ? 1'b0 : (stream_enable_reg ? !adc_fifo_w_almost_full : 1'b0);
+// Wire adc_stats or qpsk_rx output to FIFO write port (muxed by qpsk_mode)
+assign adc_fifo_w_data = DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE ? adc_fifo_w_data_dbg :
+                          qpsk_mode_adc_ff2 ? qpsk_rx_tdata :
+                          adc_stats_tdata;
+assign adc_fifo_w_valid = DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE ? !adc_fifo_w_almost_full :
+                           qpsk_mode_adc_ff2 ? qpsk_rx_tvalid :
+                           (stream_enable_reg ? adc_stats_tvalid : 1'b0);
+assign adc_stats_tready = DEBUG_FORCE_SYNC_TEST_PATTERN_WRITE ? 1'b0 :
+                           qpsk_mode_adc_ff2 ? 1'b0 :
+                           (stream_enable_reg ? !adc_fifo_w_almost_full : 1'b0);
 
 afifo_wrapper #(
     .READ_DATA_WIDTH(8)
@@ -841,7 +1025,7 @@ assign adc_fifo_r_ready = adc_rx_axis_tready;
 assign adc_rx_axis_tdata = adc_fifo_r_data;
 assign adc_rx_axis_tvalid = adc_fifo_r_valid;
 assign adc_rx_axis_hs = adc_rx_axis_tvalid && adc_rx_axis_tready;
-assign adc_rx_axis_last_beat = (adc_rx_frame_byte_count == ADC_RX_FRAME_BYTES-1);
+assign adc_rx_axis_last_beat = (adc_rx_frame_byte_count == rx_frame_size - 1);
 assign adc_rx_axis_tlast = adc_rx_axis_last_beat;
 
 

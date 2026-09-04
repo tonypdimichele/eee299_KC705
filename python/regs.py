@@ -2,12 +2,15 @@
 import argparse
 import socket
 import struct
+import time
 
 
 REG_COUNTER = 0x08
 REG_LED = 0x0C
-REG_DAC_CTRL = 0x10
+REG_DAC_CTRL = 0x10        # [0]=tone_mode, [1]=qpsk_mode, [8:4]=dac1_delay, [16:12]=dac2_delay, [28]=delay_apply_toggle
+REG_TONE_PINC = 0x14
 REG_DAC_SPI_READ = 0x18
+REG_CORR_THRESH = 0x1C     # QPSK RX correlator threshold (24-bit, default 8000)
 REG_STREAM_CTRL = 0x00
 
 
@@ -41,23 +44,41 @@ def trigger_dac_spi_read(ip, port, reg_addr, timeout=1.0, polls=50):
     raise RuntimeError("Timed out waiting for DAC SPI read completion")
 
 
-def send_req(ip, port, payload, timeout=1.0):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(timeout)
-    try:
-        sock.sendto(payload, (ip, port))
-        resp, _ = sock.recvfrom(1024)
-        if len(resp) < 9:
-            raise RuntimeError(f"Short response: {len(resp)} bytes")
-        status, raddr, rdata = struct.unpack(">BII", resp[:9])
-        return status, raddr, rdata
-    finally:
-        sock.close()
+def send_req(ip, port, payload, timeout=1.0, retries=3, retry_delay=0.05):
+    last_err = None
+    for attempt in range(1, retries + 1):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        try:
+            sock.sendto(payload, (ip, port))
+            resp, _ = sock.recvfrom(1024)
+            if len(resp) < 9:
+                raise RuntimeError(f"Short response: {len(resp)} bytes")
+            status, raddr, rdata = struct.unpack(">BII", resp[:9])
+            return status, raddr, rdata
+        except (TimeoutError, socket.timeout) as exc:
+            last_err = exc
+            if attempt < retries:
+                time.sleep(retry_delay)
+        finally:
+            sock.close()
+
+    raise TimeoutError(
+        f"No UDP response from {ip}:{port} after {retries} attempt(s), "
+        f"timeout={timeout:.3f}s per attempt"
+    ) from last_err
 
 
-def udp_write(ip, port, addr, data, timeout=1.0):
+def udp_write(ip, port, addr, data, timeout=1.0, retries=3, retry_delay=0.05):
     pkt = struct.pack(">BII", 0x01, addr & 0xFFFFFFFF, data & 0xFFFFFFFF)
-    status, raddr, rdata = send_req(ip, port, pkt, timeout=timeout)
+    status, raddr, rdata = send_req(
+        ip,
+        port,
+        pkt,
+        timeout=timeout,
+        retries=retries,
+        retry_delay=retry_delay,
+    )
     print(
         f"WR addr=0x{addr:08X} data=0x{data:08X} -> "
         f"status=0x{status:02X} resp_addr=0x{raddr:08X} resp_data=0x{rdata:08X}"
@@ -65,9 +86,16 @@ def udp_write(ip, port, addr, data, timeout=1.0):
     return status, raddr, rdata
 
 
-def udp_read(ip, port, addr, timeout=1.0):
+def udp_read(ip, port, addr, timeout=1.0, retries=3, retry_delay=0.05):
     pkt = struct.pack(">BI", 0x00, addr & 0xFFFFFFFF)
-    status, raddr, rdata = send_req(ip, port, pkt, timeout=timeout)
+    status, raddr, rdata = send_req(
+        ip,
+        port,
+        pkt,
+        timeout=timeout,
+        retries=retries,
+        retry_delay=retry_delay,
+    )
     print(
         f"RD addr=0x{addr:08X} -> "
         f"status=0x{status:02X} resp_addr=0x{raddr:08X} resp_data=0x{rdata:08X}"
@@ -80,20 +108,37 @@ def main():
     parser.add_argument("--ip", default="192.168.1.128")
     parser.add_argument("--port", type=int, default=10000)
     parser.add_argument("--timeout", type=float, default=1.0)
+    parser.add_argument("--retries", type=int, default=3, help="UDP retry attempts per request")
+    parser.add_argument("--retry-delay", type=float, default=0.05, help="Delay between retries in seconds")
     parser.add_argument("--addr", type=lambda x: int(x, 0), default=REG_LED)
     parser.add_argument("--write", type=lambda x: int(x, 0), default=None)
     parser.add_argument("--read", action="store_true")
     parser.add_argument("--demo", action="store_true", help="write/read REG3 and read counter")
     parser.add_argument("--stream-off", action="store_true", help="Disable FPGA ADC UDP stream (REG0[0]=0)")
     parser.add_argument("--stream-on", action="store_true", help="Enable FPGA ADC UDP stream (REG0[0]=1)")
+    parser.add_argument("--qpsk-on", action="store_true", help="Enable QPSK mode (REG4[1]=1, REG4[0]=0)")
+    parser.add_argument("--qpsk-off", action="store_true", help="Disable QPSK mode, re-enable tone (REG4[1]=0, REG4[0]=1)")
+    parser.add_argument("--corr-thresh", type=lambda x: int(x, 0), default=None,
+                        help="Set QPSK RX correlator threshold (REG7 @ 0x1C, default=8000)")
     parser.add_argument("--dac-read-addr", type=lambda x: int(x, 0), default=None,
                         help="Issue a single-byte DAC1 SPI register read via AXI register 0x18")
     args = parser.parse_args()
 
+    if args.retries <= 0:
+        raise ValueError("--retries must be > 0")
+    if args.retry_delay < 0:
+        raise ValueError("--retry-delay must be >= 0")
+
+    net = {
+        "timeout": args.timeout,
+        "retries": args.retries,
+        "retry_delay": args.retry_delay,
+    }
+
     if args.demo:
-        udp_write(args.ip, args.port, REG_LED, 0x0000005A, timeout=args.timeout)
-        udp_read(args.ip, args.port, REG_LED, timeout=args.timeout)
-        udp_read(args.ip, args.port, REG_COUNTER, timeout=args.timeout)
+        udp_write(args.ip, args.port, REG_LED, 0x0000005A, **net)
+        udp_read(args.ip, args.port, REG_LED, **net)
+        udp_read(args.ip, args.port, REG_COUNTER, **net)
         return
 
     if args.dac_read_addr is not None:
@@ -101,20 +146,39 @@ def main():
         return
 
     if args.stream_off:
-        udp_write(args.ip, args.port, REG_STREAM_CTRL, 0x00000000, timeout=args.timeout)
-        udp_read(args.ip, args.port, REG_STREAM_CTRL, timeout=args.timeout)
+        udp_write(args.ip, args.port, REG_STREAM_CTRL, 0x00000000, **net)
+        udp_read(args.ip, args.port, REG_STREAM_CTRL, **net)
         return
 
     if args.stream_on:
-        udp_write(args.ip, args.port, REG_STREAM_CTRL, 0x00000001, timeout=args.timeout)
-        udp_read(args.ip, args.port, REG_STREAM_CTRL, timeout=args.timeout)
+        udp_write(args.ip, args.port, REG_STREAM_CTRL, 0x00000001, **net)
+        udp_read(args.ip, args.port, REG_STREAM_CTRL, **net)
+        return
+
+    if args.qpsk_on:
+        # Read current REG4, clear bit0 (tone_mode), set bit1 (qpsk_mode)
+        _, _, val = udp_read(args.ip, args.port, REG_DAC_CTRL, **net)
+        val = (val & ~0x3) | 0x2  # bit1=1, bit0=0
+        udp_write(args.ip, args.port, REG_DAC_CTRL, val, **net)
+        return
+
+    if args.qpsk_off:
+        # Read current REG4, set bit0 (tone_mode), clear bit1 (qpsk_mode)
+        _, _, val = udp_read(args.ip, args.port, REG_DAC_CTRL, **net)
+        val = (val & ~0x3) | 0x1  # bit1=0, bit0=1
+        udp_write(args.ip, args.port, REG_DAC_CTRL, val, **net)
+        return
+
+    if args.corr_thresh is not None:
+        udp_write(args.ip, args.port, REG_CORR_THRESH, args.corr_thresh & 0xFFFFFF, **net)
+        udp_read(args.ip, args.port, REG_CORR_THRESH, **net)
         return
 
     if args.write is not None:
-        udp_write(args.ip, args.port, args.addr, args.write, timeout=args.timeout)
+        udp_write(args.ip, args.port, args.addr, args.write, **net)
 
     if args.read or args.write is None:
-        udp_read(args.ip, args.port, args.addr, timeout=args.timeout)
+        udp_read(args.ip, args.port, args.addr, **net)
 
 
 if __name__ == "__main__":

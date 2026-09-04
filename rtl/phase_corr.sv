@@ -1,5 +1,5 @@
 /**
- * Costas Correlation Phase Estimator (pipelined, Hilbert FIR)
+ * Correlation Phase Estimator (pipelined, Hilbert FIR)
  *
  * Measures relative phase between two same-frequency sinusoids (I, Q)
  * using correlation. Outputs normalized X/Y pair for host-side atan2.
@@ -40,7 +40,7 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-module phase_costas #(
+module phase_corr #(
     parameter SAMPLE_W        = 12,
     parameter ACC_W           = 40,
     parameter DC_BLOCK_SHIFT  = 8,

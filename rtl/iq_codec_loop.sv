@@ -4,6 +4,7 @@ module iq_codec_loop (
     input  wire       i_dac1_clk,
     input  wire       i_dac2_clk,
     input  wire       i_tone_mode,
+    input  wire       i_qpsk_mode,
     input  wire [31:0] i_tone_pinc,
 (*mark_debug = "true"*)
     input  wire [7:0] i_s_axis_tdata,
@@ -346,17 +347,133 @@ fl9781_tx_wrapper fl9781_tx_wrapper_inst (
     .o_dac2_l(dac2_l)
 );
 
+// ──────────────────────────────────────────────────────────────────────
+// QPSK TX Framer (packets: preamble + 32B data + postamble)
+// ──────────────────────────────────────────────────────────────────────
+(* mark_debug = "true" *)
+wire signed [13:0] qpsk_tx_i_sample;
+(* mark_debug = "true" *)
+wire signed [13:0] qpsk_tx_q_sample;
+(* mark_debug = "true" *)
+wire               qpsk_tx_frame_active;
+(* mark_debug = "true" *)
+wire               qpsk_tx_symbol_valid;
+
+// CDC for qpsk_mode: 125 MHz -> DAC clock domain
+reg qpsk_mode_dac1_ff1, qpsk_mode_dac1_ff2;
+always @(posedge i_dac1_clk) begin
+    qpsk_mode_dac1_ff1 <= i_qpsk_mode;
+    qpsk_mode_dac1_ff2 <= qpsk_mode_dac1_ff1;
+end
+(* mark_debug = "true" *)
+wire qpsk_mode_dac1 = qpsk_mode_dac1_ff2;
+
+// Byte serializer: AFIFO produces 16-bit words; present as two 8-bit beats
+// First cycle: low byte [7:0], second cycle: high byte [15:8]
+reg        ser_phase;       // 0 = low byte valid, 1 = high byte valid
+reg [7:0]  ser_hi_byte;    // latched high byte
+reg        ser_hi_valid;   // high byte pending
+wire [7:0] ser_tdata  = ser_phase ? ser_hi_byte : eth_data_dac1[7:0];
+wire       ser_tvalid = ser_phase ? ser_hi_valid : (eth_data_valid && qpsk_mode_dac1);
+
+always @(posedge i_dac1_clk) begin
+    if (!tone_aresetn) begin
+        ser_phase    <= 1'b0;
+        ser_hi_byte  <= 8'd0;
+        ser_hi_valid <= 1'b0;
+    end else begin
+        if (!ser_phase) begin
+            // On a valid FIFO read, latch high byte for next cycle
+            if (eth_data_valid && qpsk_mode_dac1) begin
+                ser_hi_byte  <= eth_data_dac1[15:8];
+                ser_hi_valid <= 1'b1;
+                ser_phase    <= 1'b1;
+            end
+        end else begin
+            // Present high byte this cycle, then return to low-byte phase
+            ser_hi_valid <= 1'b0;
+            ser_phase    <= 1'b0;
+        end
+    end
+end
+
+qpsk_tx_framer #(
+    .CLKS_PER_SYMBOL(32),
+    .PAYLOAD_BYTES(32),
+    .SYMBOL_AMP(14'sd6000)
+) qpsk_tx_framer_inst (
+    .i_clk(i_dac1_clk),
+    .i_rst(!tone_aresetn),
+    .i_s_axis_tdata(ser_tdata),
+    .i_s_axis_tvalid(ser_tvalid),
+    .o_s_axis_tready(),
+    .i_s_axis_tlast(1'b0),
+    .o_i_sample(qpsk_tx_i_sample),
+    .o_q_sample(qpsk_tx_q_sample),
+    .o_symbol_valid(qpsk_tx_symbol_valid),
+    .o_frame_active(qpsk_tx_frame_active)
+);
+
+// ──────────────────────────────────────────────────────────────────────
+// QPSK carrier mixer — upconverts baseband symbols so they survive the
+// FL9781's AC-coupled (transformer) DAC outputs. Fc = i_dac1_clk/8 =
+// 20.8333 MHz, chosen so it lands on ADC_clk/6 too: both TX and RX see
+// an integer number of carrier cycles per symbol (4 per 192 ns symbol),
+// letting a boxcar RX integrator null the image without a fractional DDS.
+// ──────────────────────────────────────────────────────────────────────
+(* mark_debug = "true" *)
+wire signed [13:0] qpsk_tx_i_carrier;
+(* mark_debug = "true" *)
+wire signed [13:0] qpsk_tx_q_carrier;
+
+qpsk_tx_carrier_mix #(
+    .CARRIER_PERIOD(8),
+    .CARRIER_AMP(14'sd8000)
+) qpsk_tx_carrier_mix_i_inst (
+    .i_clk(i_dac1_clk),
+    .i_rst(!tone_aresetn),
+    .i_frame_active(qpsk_tx_frame_active),
+    .i_sample(qpsk_tx_i_sample),
+    .o_carrier_sample(qpsk_tx_i_carrier)
+);
+
+qpsk_tx_carrier_mix #(
+    .CARRIER_PERIOD(8),
+    .CARRIER_AMP(14'sd8000)
+) qpsk_tx_carrier_mix_q_inst (
+    .i_clk(i_dac1_clk),
+    .i_rst(!tone_aresetn),
+    .i_frame_active(qpsk_tx_frame_active),
+    .i_sample(qpsk_tx_q_sample),
+    .o_carrier_sample(qpsk_tx_q_carrier)
+);
+
 wire dac_sample_valid_mux;
+(* mark_debug = "true" *)
 wire [13:0] dac1_h_mux;
+(* mark_debug = "true" *)
 wire [13:0] dac1_l_mux;
 wire [13:0] dac2_h_mux;
 wire [13:0] dac2_l_mux;
 
-assign dac_sample_valid_mux = tone_mode_dac1 ? tone_dds_tvalid : dds_iq_tvalid;
-assign dac1_h_mux = tone_mode_dac1 ? tone_dac1_h : 1'b0;
-assign dac1_l_mux = tone_mode_dac1 ? tone_dac1_l : 1'b1;
-assign dac2_h_mux = DAC_PARK_MIDSCALE;
-assign dac2_l_mux = DAC_PARK_MIDSCALE;
+// DAC output mux: tone mode > qpsk mode > legacy BPSK
+// In QPSK mode, DAC1 is the only physical chip probed: H-half = I, L-half = Q.
+// DAC2 is unused for QPSK and stays parked at midscale.
+assign dac_sample_valid_mux = tone_mode_dac1 ? tone_dds_tvalid :
+                              qpsk_mode_dac1 ? 1'b1 :
+                              dds_iq_tvalid;
+assign dac1_h_mux = tone_mode_dac1 ? tone_dac1_h :
+                    qpsk_mode_dac1 ? qpsk_tx_i_carrier :
+                    1'b0;
+assign dac1_l_mux = tone_mode_dac1 ? tone_dac1_l :
+                    qpsk_mode_dac1 ? qpsk_tx_q_carrier :
+                    1'b1;
+assign dac2_h_mux = tone_mode_dac1 ? DAC_PARK_MIDSCALE :
+                    qpsk_mode_dac1 ? DAC_PARK_MIDSCALE :
+                    DAC_PARK_MIDSCALE;
+assign dac2_l_mux = tone_mode_dac1 ? DAC_PARK_MIDSCALE :
+                    qpsk_mode_dac1 ? DAC_PARK_MIDSCALE :
+                    DAC_PARK_MIDSCALE;
 
 // Double-flop DAC outputs into the DAC clock domains before DDR launch.
 reg [13:0] o_dac1_h_ff1;

@@ -77,6 +77,7 @@ module adc_stats #(
     reg       measurement_ready;           // pulse: new measurement to pack
 
     // ---- Adaptive-N zero-crossing frequency measurement (free-running) -------
+    (* mark_debug = "true" *)
     reg signed [11:0] prev_sample_i;
     reg [15:0]        zc_period_counter;     // clocks since last crossing
     reg [15:0]        measured_clk_count;    // total clocks over N crossings (latched)
@@ -112,10 +113,10 @@ module adc_stats #(
     reg signed [11:0] sample_i_d1;
     always @(posedge clk) sample_i_d1 <= sample_i;
 
-    phase_costas #(
+    phase_corr #(
         .SAMPLE_W        (12),
         .ACC_W           (40)
-    ) u_phase_costas (
+    ) u_phase_corr (
         .clk                    (clk),
         .rst                    (rst),
         .sample_i               (sample_i_d1),
@@ -125,6 +126,26 @@ module adc_stats #(
         .xy_x_out               (costas_xy_x),
         .xy_y_out               (costas_xy_y),
         .xy_valid               (costas_xy_valid)
+    );
+
+
+    // ---- Standalone ZC estimator (for resource comparison) -------------------
+    wire [31:0]        pzc_delay_sum;
+    wire               pzc_valid;
+
+(* dont_touch = "true" *)
+    phase_zc #(
+        .SAMPLE_W             (12),
+        .FREQ_MIN_PERIOD_CLKS (FREQ_MIN_PERIOD_CLKS)
+    ) u_phase_zc (
+        .clk            (clk),
+        .rst            (rst),
+        .sample_i       (sample_i_d1),
+        .sample_q       (sample_q),
+        .window_start   (costas_window_start),
+        .window_done    (costas_window_done),
+        .delay_sum_out  (pzc_delay_sum),
+        .xy_valid       (pzc_valid)
     );
 
     // ---- Packet packing intermediates ----------------------------------------

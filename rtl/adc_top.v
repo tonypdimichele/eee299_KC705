@@ -38,6 +38,8 @@ module adc_top(
 	output reg [11:0] 			  adc1_data_a_d0,
 	(* MARK_DEBUG="true" *)	
 	output reg [11:0] 			  adc1_data_b_d0,
+	(* MARK_DEBUG="true" *)
+	output reg [11:0] 			  adc2_data_a_d0,
 	output                    adc1_spi_ce, //adc1 chip spi select
 	output                    adc1_spi_sclk,//adc1 spi clk
 	inout                     adc1_spi_io,  //spi data
@@ -74,7 +76,6 @@ wire[11:0]                      adc2_data_a;
 wire[11:0]                      adc2_data_b;
 
 //(* MARK_DEBUG="true" *)reg[11:0] adc1_data_b_d0;
-(* MARK_DEBUG="true" *)reg[11:0] adc2_data_a_d0;
 (* MARK_DEBUG="true" *)reg[11:0] adc2_data_b_d0;
 assign fan_pwm=1'b0;
 assign adc2_clk_ref = clk_125M;

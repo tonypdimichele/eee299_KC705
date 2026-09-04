@@ -17,7 +17,7 @@ for k, c in coeffs.items():
     H = np.sum(h * np.exp(-1j*w*n))   # complex response
     return H """
 
-freqs = np.array([1.5e6, 5e6, 10e6, 25e6, 40e6])
+freqs = np.array([500e3, 1e6, 1.5e6, 5e6, 10e6, 25e6, 40e6, 62.5e6, 100e6])
 n = np.arange(len(h))
 w = 2*np.pi*freqs/fs                    # shape (F,)
 E = np.exp(-1j * w[:, None] * n[None, :])  # shape (F, N)

@@ -83,6 +83,7 @@ module ethernet_subsystem #
     input  wire       uart_cts,
 
     output wire       reg_tone_mode,
+    output wire       reg_qpsk_mode,
     output wire       reg_stream_enable,
     output wire [31:0] o_reg_tone_pinc,
     output wire [4:0] reg_dac1_delay,
@@ -93,6 +94,8 @@ module ethernet_subsystem #
     input  wire [7:0] dac_spi_read_data,
     input  wire       dac_spi_read_busy,
     input  wire       dac_spi_read_done_toggle,
+    output wire [31:0] reg_corr_threshold,
+    output wire [2:0]  reg_carrier_phase_offset,
 
     /*
      * External AXIS stream interface
@@ -646,6 +649,7 @@ axi_lite_regs u_regs (
     .stream_enable_out(reg_stream_enable),
     .reg_tone_pinc(o_reg_tone_pinc),
     .tone_mode_out(reg_tone_mode),
+    .qpsk_mode_out(reg_qpsk_mode),
     .dac1_delay_out(reg_dac1_delay),
     .dac2_delay_out(reg_dac2_delay),
     .dac_delay_apply_toggle_out(reg_dac_delay_apply_toggle),
@@ -653,7 +657,9 @@ axi_lite_regs u_regs (
     .dac_spi_read_toggle_out(reg_dac_spi_read_toggle),
     .dac_spi_read_data_in(dac_spi_read_data),
     .dac_spi_read_busy_in(dac_spi_read_busy),
-    .dac_spi_read_done_toggle_in(dac_spi_read_done_toggle)
+    .dac_spi_read_done_toggle_in(dac_spi_read_done_toggle),
+    .corr_threshold_out(reg_corr_threshold),
+    .carrier_phase_offset_out(reg_carrier_phase_offset)
 );
 
 // -----------------------------------------------------------------------------
@@ -666,7 +672,9 @@ reg [31:0] app3_loop_ip_dst      = 32'd0;
 reg [15:0] app3_loop_udp_dst     = 16'd0;
 
 localparam [15:0] APP3_TX_PAYLOAD_BYTES = 16'd512;
-localparam [15:0] APP3_TX_UDP_LENGTH    = APP3_TX_PAYLOAD_BYTES + 16'd8;
+localparam [15:0] APP3_TX_QPSK_PAYLOAD = 16'd32;
+wire [15:0] app3_tx_payload_size = reg_qpsk_mode ? APP3_TX_QPSK_PAYLOAD : APP3_TX_PAYLOAD_BYTES;
+wire [15:0] app3_tx_udp_len     = app3_tx_payload_size + 16'd8;
 
 // Always accept ingress headers; they update stream destination.
 assign app2_rx_hdr_ready = 1'b1;
@@ -690,7 +698,7 @@ assign app3_tx_ip_dst       = app3_loop_ip_dst;
 assign app3_tx_ip_src       = local_ip;
 assign app3_tx_udp_dst_port = app3_loop_udp_dst;
 assign app3_tx_udp_src_port = 16'd30000;
-assign app3_tx_length       = APP3_TX_UDP_LENGTH;
+assign app3_tx_length       = app3_tx_udp_len;
 
 assign app3_tx_tdata        = s_axis_rpi_tx_tdata;
 assign app3_tx_tvalid       = s_axis_rpi_tx_tvalid;

@@ -34,7 +34,7 @@ always_ff @(posedge i_clk) begin
     end
 
      o_dac1_h <= o_i_sample;
-     o_dac1_l <= o_i_sample;
+     o_dac1_l <= o_q_sample;
      o_dac2_h <= o_q_sample;
      o_dac2_l <= o_q_sample;
 

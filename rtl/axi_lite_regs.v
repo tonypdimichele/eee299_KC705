@@ -36,6 +36,7 @@ module axi_lite_regs #
     output reg                           stream_enable_out,
     output reg  [31:0]                   reg_tone_pinc,
     output reg                           tone_mode_out,
+    output reg                           qpsk_mode_out,
     output reg  [4:0]                    dac1_delay_out,
     output reg  [4:0]                    dac2_delay_out,
     output reg                           dac_delay_apply_toggle_out,
@@ -43,10 +44,14 @@ module axi_lite_regs #
     output reg                           dac_spi_read_toggle_out,
     input  wire [7:0]                    dac_spi_read_data_in,
     input  wire                          dac_spi_read_busy_in,
-    input  wire                          dac_spi_read_done_toggle_in
+    input  wire                          dac_spi_read_done_toggle_in,
+    output wire [31:0]                   corr_threshold_out,
+    output reg  [2:0]                    carrier_phase_offset_out
 );
 
     reg [31:0] reg0, reg1, reg3, reg4_ctrl, reg_tone_pinc32,reg6_spi_read_ctrl, reg2_counter;
+    reg [31:0] reg7_corr_thresh;
+    reg [31:0] reg8_carrier_phase;
     reg  aw_en;
     reg [C_S_AXI_ADDR_WIDTH-1:0] awaddr_latched, araddr_latched;
 
@@ -80,6 +85,8 @@ module axi_lite_regs #
             reg4_ctrl <= 32'h0001_2121;
             reg_tone_pinc32<=32'h0000_13AF;
             reg6_spi_read_ctrl <= 32'd0;
+            reg7_corr_thresh <= 32'd400000;
+            reg8_carrier_phase <= 32'd0;
         end
         else if (s_axi_awready && s_axi_awvalid && s_axi_wready && s_axi_wvalid) begin
             case (aw_word)
@@ -107,6 +114,11 @@ module axi_lite_regs #
                            if (wstrb[1]) reg6_spi_read_ctrl[15:8] <=wdata[15:8];
                            if (wstrb[2]) reg6_spi_read_ctrl[23:16]<=wdata[23:16];
                            if (wstrb[3]) reg6_spi_read_ctrl[31:24]<=wdata[31:24]; end
+                4'h7: begin if (wstrb[0]) reg7_corr_thresh[7:0]  <=wdata[7:0];
+                           if (wstrb[1]) reg7_corr_thresh[15:8] <=wdata[15:8];
+                           if (wstrb[2]) reg7_corr_thresh[23:16]<=wdata[23:16];
+                           if (wstrb[3]) reg7_corr_thresh[31:24]<=wdata[31:24]; end
+                4'h8: begin if (wstrb[0]) reg8_carrier_phase[7:0]  <=wdata[7:0]; end
                 default: ;
             endcase
         end
@@ -151,12 +163,16 @@ module axi_lite_regs #
                     4'h4: s_axi_rdata <= reg4_ctrl;
                     4'h5: s_axi_rdata <= reg_tone_pinc32;
                     4'h6: s_axi_rdata <= reg6_spi_read_status;
+                    4'h7: s_axi_rdata <= reg7_corr_thresh;
+                    4'h8: s_axi_rdata <= reg8_carrier_phase;
                     default: s_axi_rdata <= 32'hDEAD_BEEF;
                 endcase
                 s_axi_rvalid<=1; s_axi_rresp<=2'b00;
             end else if (s_axi_rvalid && s_axi_rready) s_axi_rvalid<=0;
         end
     end
+
+    assign corr_threshold_out = reg7_corr_thresh;
 
     // Counter + LED
     always @(posedge s_axi_aclk) begin
@@ -165,12 +181,14 @@ module axi_lite_regs #
             reg3_out<=8'h00;
             stream_enable_out<=1'b1;
             tone_mode_out<=1'b1;
+            qpsk_mode_out<=1'b0;
             dac1_delay_out<=5'd18;
             dac2_delay_out<=5'd18;
             dac_delay_apply_toggle_out<=1'b0;
             dac_spi_read_addr_out<=8'h00;
             dac_spi_read_toggle_out<=1'b0;
             reg_tone_pinc<=31'h0000_13AF;
+            carrier_phase_offset_out<=3'd0;
         end
         else begin
             reg2_counter<=reg2_counter+1;
@@ -178,11 +196,13 @@ module axi_lite_regs #
             stream_enable_out<=reg0[0];
             reg_tone_pinc<=reg_tone_pinc32[31:0];
             tone_mode_out<=reg4_ctrl[0];
+            qpsk_mode_out<=reg4_ctrl[1];
             dac1_delay_out<=reg4_ctrl[8:4];
             dac2_delay_out<=reg4_ctrl[16:12];
             dac_delay_apply_toggle_out<=reg4_ctrl[28];
             dac_spi_read_addr_out<=reg6_spi_read_ctrl[7:0];
             dac_spi_read_toggle_out<=reg6_spi_read_ctrl[16];
+            carrier_phase_offset_out<=reg8_carrier_phase[2:0];
         end
     end
 endmodule
