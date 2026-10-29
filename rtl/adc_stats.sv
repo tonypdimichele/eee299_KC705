@@ -11,7 +11,8 @@
  * power-of-2 shifts (no dividers) to keep total_clks in a target
  * range. Host computes freq = sample_rate * N / total_clks.
  *
- * Peaks: running max/min of I channel, latched at N-crossing boundary.
+ * Peaks: running max/min of I and Q channels, latched at the same
+ * I-channel N-crossing boundary.
  *
  * Phase: measured as the time delay from each I-channel positive-going
  * zero crossing to the next Q-channel positive-going zero crossing.
@@ -19,16 +20,19 @@
  * the packet. Host computes phase = 360 * delay_sum / total_clks.
  * Purely time-domain — no amplitude dependence or sinc correction.
  *
- * Packet format (16 bytes):
+ * Packet format (19 bytes):
  *   [0]    sync byte (0xA7)
- *   [1]    peak_pos[11:4]
- *   [2]    peak_pos[3:0] || peak_neg[11:8]
- *   [3]    peak_neg[7:0]
+ *   [1]    i_peak_pos[11:4]
+ *   [2]    i_peak_pos[3:0] || i_peak_neg[11:8]
+ *   [3]    i_peak_neg[7:0]
  *   [4:7]  iq_delay_sum (unsigned 32-bit, clocks from I ZC to Q ZC, summed over N)
  *   [8:9]  total_clk_count (16-bit)
  *   [10:11] n_cycles (16-bit)
  *   [12:13] cordic_y (signed 16-bit, correlation Y for host atan2)
  *   [14:15] cordic_x (signed 16-bit, correlation X for host atan2)
+ *   [16]   q_peak_pos[11:4]
+ *   [17]   q_peak_pos[3:0] || q_peak_neg[11:8]
+ *   [18]   q_peak_neg[7:0]
  */
 
 `timescale 1ns / 1ps
@@ -71,8 +75,9 @@ module adc_stats #(
 
     // ---- Output packet ----------------------------------------------------
     localparam [7:0] SYNC_BYTE = 8'hA7;
-    reg [7:0] packet_buf [0:15];
-    reg [3:0] packet_byte_idx;
+    localparam [4:0] PACKET_LEN = 5'd19;
+    reg [7:0] packet_buf [0:PACKET_LEN-1];
+    reg [4:0] packet_byte_idx;
     reg       packet_valid;
     reg       measurement_ready;           // pulse: new measurement to pack
 
@@ -93,6 +98,10 @@ module adc_stats #(
     reg signed [11:0] run_pk_neg;            // running min during current window
     reg signed [11:0] latched_pk_pos;        // latched at measurement boundary
     reg signed [11:0] latched_pk_neg;        // latched at measurement boundary
+    reg signed [11:0] run_q_pk_pos;          // Q running max during current window
+    reg signed [11:0] run_q_pk_neg;          // Q running min during current window
+    reg signed [11:0] latched_q_pk_pos;      // Q latched at measurement boundary
+    reg signed [11:0] latched_q_pk_neg;      // Q latched at measurement boundary
 
     // ---- Phase: I-to-Q zero-crossing delay measurement -----------------------
     reg signed [11:0] prev_sample_q;         // Q delayed 1 clk for ZC detection
@@ -129,6 +138,7 @@ module adc_stats #(
 
     // ---- Packet packing intermediates ----------------------------------------
     reg        [11:0] pk_pos_code, pk_neg_code;
+    reg        [11:0] q_pk_pos_code, q_pk_neg_code;
 
     reg  signed [15:0] latched_cordic_y;   // raw Y for Python atan2
     reg  signed [15:0] latched_cordic_x;   // raw X for Python atan2
@@ -141,7 +151,7 @@ module adc_stats #(
             packet_valid          <= 1'b0;
             measurement_ready     <= 1'b0;
             m_axis_tvalid         <= 1'b0;
-            packet_byte_idx       <= 4'd0;
+            packet_byte_idx       <= 5'd0;
             prev_sample_i         <= 12'sd0;
             prev_sample_q         <= 12'sd0;
             zc_period_counter     <= 16'd1;
@@ -156,6 +166,10 @@ module adc_stats #(
             run_pk_neg            <=  12'sd2047;
             latched_pk_pos        <= 12'sd0;
             latched_pk_neg        <= 12'sd0;
+            run_q_pk_pos          <= -12'sd2048;
+            run_q_pk_neg          <=  12'sd2047;
+            latched_q_pk_pos      <= 12'sd0;
+            latched_q_pk_neg      <= 12'sd0;
             q_zc_armed            <= 1'b0;
             iq_delay_counter      <= 16'd0;
             iq_delay_captured     <= 1'b1;
@@ -180,6 +194,8 @@ module adc_stats #(
             // ---- Peak tracking: update running max/min every cycle ----
             if (sample_i > run_pk_pos) run_pk_pos <= sample_i;
             if (sample_i < run_pk_neg) run_pk_neg <= sample_i;
+            if (sample_q > run_q_pk_pos) run_q_pk_pos <= sample_q;
+            if (sample_q < run_q_pk_neg) run_q_pk_neg <= sample_q;
 
             // ---- I-to-Q delay counter: always incrementing ----
             if (iq_delay_counter < 16'hFFFF)
@@ -219,10 +235,14 @@ module adc_stats #(
                         // Latch peaks and delay sum, reset running trackers
                         latched_pk_pos      <= run_pk_pos;
                         latched_pk_neg      <= run_pk_neg;
+                        latched_q_pk_pos    <= run_q_pk_pos;
+                        latched_q_pk_neg    <= run_q_pk_neg;
                         latched_iq_delay    <= iq_delay_accum;
                         iq_delay_accum      <= 32'd0;
                         run_pk_pos       <= -12'sd2048;
                         run_pk_neg       <=  12'sd2047;
+                        run_q_pk_pos     <= -12'sd2048;
+                        run_q_pk_neg     <=  12'sd2047;
                         zc_snapshot_pending <= 1'b1;
 
                         // Signal Costas correlator: end of window
@@ -249,6 +269,8 @@ module adc_stats #(
                         freq_clk_accum   <= 32'd0;
                         run_pk_pos         <= -12'sd2048;
                         run_pk_neg         <=  12'sd2047;
+                        run_q_pk_pos       <= -12'sd2048;
+                        run_q_pk_neg       <=  12'sd2047;
                         iq_delay_accum     <= 32'd0;
                         costas_window_start <= 1'b1;
 
@@ -288,6 +310,8 @@ module adc_stats #(
             if (measurement_ready && !packet_valid) begin
                 pk_pos_code = to_offset(latched_pk_pos);
                 pk_neg_code = to_offset(latched_pk_neg);
+                q_pk_pos_code = to_offset(latched_q_pk_pos);
+                q_pk_neg_code = to_offset(latched_q_pk_neg);
 
                 packet_buf[0]  <= SYNC_BYTE;
                 packet_buf[1]  <= pk_pos_code[11:4];
@@ -305,9 +329,12 @@ module adc_stats #(
                 packet_buf[13] <= latched_cordic_y[7:0];
                 packet_buf[14] <= latched_cordic_x[15:8];
                 packet_buf[15] <= latched_cordic_x[7:0];
+                packet_buf[16] <= q_pk_pos_code[11:4];
+                packet_buf[17] <= {q_pk_pos_code[3:0], q_pk_neg_code[11:8]};
+                packet_buf[18] <= q_pk_neg_code[7:0];
 
                 packet_valid    <= 1'b1;
-                packet_byte_idx <= 4'd0;
+                packet_byte_idx <= 5'd0;
             end
 
             // ===== Output AXIS bytes =======================================
@@ -315,9 +342,9 @@ module adc_stats #(
                 m_axis_tvalid <= 1'b1;
                 m_axis_tdata  <= packet_buf[packet_byte_idx];
                 if (m_axis_tready) begin
-                    if (packet_byte_idx == 4'd15) begin
+                    if (packet_byte_idx == PACKET_LEN - 1'b1) begin
                         packet_valid    <= 1'b0;
-                        packet_byte_idx <= 4'd0;
+                        packet_byte_idx <= 5'd0;
                     end else begin
                         packet_byte_idx <= packet_byte_idx + 1'd1;
                     end

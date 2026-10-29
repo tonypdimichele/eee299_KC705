@@ -7,11 +7,11 @@ FPGA computes:
     - Phase from sine (Q) channel
 Analyzer receives and displays those stats.
 
-Stat Packet Format (16 bytes per stat):
+Stat Packet Format (19 bytes per stat):
     [0]: sync byte (0xA7)
-    [1]: peak_pos[11:4]
-    [2]: peak_pos[3:0] || peak_neg[11:8]
-    [3]: peak_neg[7:0]
+    [1]: i_peak_pos[11:4]
+    [2]: i_peak_pos[3:0] || i_peak_neg[11:8]
+    [3]: i_peak_neg[7:0]
     [4:7]: iq_delay_sum (unsigned 32-bit, clocks from I ZC to Q ZC, summed over N)
     [8]: freq_raw_clk_count[15:8]  (clk count over adaptive N crossings)
     [9]: freq_raw_clk_count[7:0]
@@ -19,6 +19,9 @@ Stat Packet Format (16 bytes per stat):
     [11]: n_cycles[7:0]
     [12:13]: corr_y (signed 16-bit, correlation Y for Python atan2)
     [14:15]: corr_x (signed 16-bit, correlation X for Python atan2)
+    [16]: q_peak_pos[11:4]
+    [17]: q_peak_pos[3:0] || q_peak_neg[11:8]
+    [18]: q_peak_neg[7:0]
 
 Usage:
     python3 python/adc_stats_analyzer.py --bind-port 40000 --fpga-ip 192.168.1.128 --duration-sec 1
@@ -44,8 +47,8 @@ class ADCStatsAnalyzer:
     """Real-time analyzer for FPGA-computed ADC statistics."""
 
     SYNC_BYTE = 0xA7
-    FRAME_LEN = 16
-    PAYLOAD_LEN = 15
+    FRAME_LEN = 19
+    PAYLOAD_LEN = 18
     MAX_SYNC_LOOKAHEAD_FRAMES = 4
     MIN_N_CYCLES = 4
     MAX_N_CYCLES = 30000
@@ -74,6 +77,7 @@ class ADCStatsAnalyzer:
         vpp_cal_enabled: bool = True,
         vpp_cal_a: float = 1.0377,
         vpp_cal_b: float = 0.00409,
+        tx_iq_phase_deg: float = 90.0,
     ):
         self.bind_ip = bind_ip
         self.bind_port = bind_port
@@ -99,6 +103,10 @@ class ADCStatsAnalyzer:
         self.vpp_cal_enabled = bool(vpp_cal_enabled)
         self.vpp_cal_a = float(vpp_cal_a)
         self.vpp_cal_b = float(vpp_cal_b)
+        # Transmitted Q-vs-I phase in the same sign convention as the measured
+        # phase. Tone DDS sends I=cos, Q=sin, which this measurement reads as +90.
+        # (Qrx-Qtx) - (Irx-Itx) = (Qrx-Irx) - (Qtx-Itx) = measured - tx_iq_phase_deg
+        self.tx_iq_phase_deg = float(tx_iq_phase_deg)
 
         # CSV output
         self.csv_output = csv_output
@@ -111,14 +119,21 @@ class ADCStatsAnalyzer:
                     "host_time_iso",
                     "report_index",
                     "stats_processed",
-                    "peak_pos_code",
-                    "peak_neg_code",
-                    "peak_pos_volts",
-                    "peak_neg_volts",
-                    "v2rms_v2",
+                    "i_peak_pos_code",
+                    "i_peak_neg_code",
+                    "i_peak_pos_volts",
+                    "i_peak_neg_volts",
+                    "i_v2rms_v2",
+                    "q_peak_pos_code",
+                    "q_peak_neg_code",
+                    "q_peak_pos_volts",
+                    "q_peak_neg_volts",
+                    "q_v2rms_v2",
                     "phase_zc_deg",
                     "phase_corr_raw_deg",
                     "phase_corr_stable_deg",
+                    "phase_zc_rxtx_diff_deg",
+                    "phase_corr_rxtx_diff_deg",
                     "n_cycles",
                     "freq_hz",
                     "freq_mhz",
@@ -167,6 +182,8 @@ class ADCStatsAnalyzer:
         self.batch_size = 20
         self.batch_peak_pos_codes = []
         self.batch_peak_neg_codes = []
+        self.batch_q_peak_pos_codes = []
+        self.batch_q_peak_neg_codes = []
         self.batch_phases_deg = []
         self.batch_corr_phases_deg_raw = []
         self.batch_corr_phases_deg = []
@@ -281,6 +298,8 @@ class ADCStatsAnalyzer:
         peak_pos_avg = float(statistics.fmean(self.batch_peak_pos_codes))
         peak_neg_avg = float(statistics.fmean(self.batch_peak_neg_codes))
         peak_pp_avg = peak_pos_avg - peak_neg_avg
+        q_peak_pos_avg = float(statistics.fmean(self.batch_q_peak_pos_codes))
+        q_peak_neg_avg = float(statistics.fmean(self.batch_q_peak_neg_codes))
         phase_avg = self._circular_mean_deg(self.batch_phases_deg)
         corr_phase_raw_avg = self._circular_mean_deg(self.batch_corr_phases_deg_raw)
         corr_phase_avg = self._circular_mean_deg(self.batch_corr_phases_deg)
@@ -291,14 +310,23 @@ class ADCStatsAnalyzer:
         peak_pos_volts = self.code_to_volts(peak_pos_avg)
         peak_neg_volts = self.code_to_volts(peak_neg_avg)
         peak_pp_volts = peak_pos_volts - peak_neg_volts
-        # Frequency-dependent Vpp calibration (linear correction for ADC chain rolloff)
+        q_peak_pos_volts = self.code_to_volts(q_peak_pos_avg)
+        q_peak_neg_volts = self.code_to_volts(q_peak_neg_avg)
+        # Frequency-dependent Vpp calibration (linear correction for ADC chain rolloff).
+        # Fitted on I; applied to Q assuming both channels share the same rolloff.
         if self.vpp_cal_enabled and freq_avg > 0:
             vpp_cal_factor = self.vpp_cal_a + self.vpp_cal_b * freq_avg
             peak_pos_volts *= vpp_cal_factor
             peak_neg_volts *= vpp_cal_factor
             peak_pp_volts = peak_pos_volts - peak_neg_volts
+            q_peak_pos_volts *= vpp_cal_factor
+            q_peak_neg_volts *= vpp_cal_factor
+        q_peak_pp_volts = q_peak_pos_volts - q_peak_neg_volts
         # For a sinusoid, Vrms = Vpp / (2*sqrt(2)); therefore Vrms^2 = Vpp^2 / 8.
         v2rms_v2 = (peak_pp_volts * peak_pp_volts) / 8.0
+        q_v2rms_v2 = (q_peak_pp_volts * q_peak_pp_volts) / 8.0
+        zc_rxtx_diff_deg = self._wrap_phase_deg(phase_avg - self.tx_iq_phase_deg)
+        corr_rxtx_diff_deg = self._wrap_phase_deg(corr_phase_avg - self.tx_iq_phase_deg)
 
         self.latest_metrics = {
             "peak_pos_code": peak_pos_avg,
@@ -308,6 +336,11 @@ class ADCStatsAnalyzer:
             "peak_neg_volts": peak_neg_volts,
             "peak_pp_volts": peak_pp_volts,
             "v2rms_v2": v2rms_v2,
+            "q_peak_pos_code": q_peak_pos_avg,
+            "q_peak_neg_code": q_peak_neg_avg,
+            "q_peak_pos_volts": q_peak_pos_volts,
+            "q_peak_neg_volts": q_peak_neg_volts,
+            "q_v2rms_v2": q_v2rms_v2,
             "phase_deg": phase_avg,
             "corr_phase_deg_raw": corr_phase_raw_avg,
             "corr_phase_deg": corr_phase_avg,
@@ -330,9 +363,16 @@ class ADCStatsAnalyzer:
                     f"{peak_pos_volts:.6f}",
                     f"{peak_neg_volts:.6f}",
                     f"{v2rms_v2:.9f}",
+                    f"{q_peak_pos_avg:.3f}",
+                    f"{q_peak_neg_avg:.3f}",
+                    f"{q_peak_pos_volts:.6f}",
+                    f"{q_peak_neg_volts:.6f}",
+                    f"{q_v2rms_v2:.9f}",
                     f"{phase_avg:.3f}",
                     f"{corr_phase_raw_avg:.3f}",
                     f"{corr_phase_avg:.3f}",
+                    f"{zc_rxtx_diff_deg:.3f}",
+                    f"{corr_rxtx_diff_deg:.3f}",
                     f"{n_cycles_avg:.3f}",
                     f"{freq_hz:.3f}",
                     f"{freq_avg:.6f}",
@@ -352,6 +392,8 @@ class ADCStatsAnalyzer:
         self.reports_generated += 1
         self.batch_peak_pos_codes.clear()
         self.batch_peak_neg_codes.clear()
+        self.batch_q_peak_pos_codes.clear()
+        self.batch_q_peak_neg_codes.clear()
         self.batch_phases_deg.clear()
         self.batch_corr_phases_deg_raw.clear()
         self.batch_corr_phases_deg.clear()
@@ -421,10 +463,13 @@ class ADCStatsAnalyzer:
             freq_raw = self._decode_freq(stat_bytes)
             n_cycles = self._decode_n_cycles(stat_bytes)
             corr_y, corr_x = self._decode_corr_xy(stat_bytes)
+            q_peak_pos_code, q_peak_neg_code = self._decode_q_peaks(stat_bytes)
 
             # Transport should carry offset-binary peaks with pos >= neg; auto-correct if inverted.
             if peak_pos_code < peak_neg_code:
                 peak_pos_code, peak_neg_code = peak_neg_code, peak_pos_code
+            if q_peak_pos_code < q_peak_neg_code:
+                q_peak_pos_code, q_peak_neg_code = q_peak_neg_code, q_peak_pos_code
 
             # Optional debug output for raw packet decoding.
             if self.debug_stats and (self.total_stats_read < 10 or (self.total_stats_read % 100) == 0):
@@ -538,6 +583,8 @@ class ADCStatsAnalyzer:
 
             self.batch_peak_pos_codes.append(peak_pos_code)
             self.batch_peak_neg_codes.append(peak_neg_code)
+            self.batch_q_peak_pos_codes.append(q_peak_pos_code)
+            self.batch_q_peak_neg_codes.append(q_peak_neg_code)
             self.batch_phases_deg.append(phase_deg)
             self.batch_corr_phases_deg_raw.append(corr_phase_deg_raw)
             self.batch_corr_phases_deg.append(corr_phase_deg)
@@ -627,6 +674,12 @@ class ADCStatsAnalyzer:
         b1 = stat_bytes[1]
         b2 = stat_bytes[2]
         return (((b1 & 0x0F) << 8) | b2)  # 12-bit code
+
+    @staticmethod
+    def _decode_q_peaks(stat_bytes: bytearray):
+        """Decode (q_peak_pos, q_peak_neg) 12-bit codes from bytes [15:18]."""
+        b15, b16, b17 = stat_bytes[15], stat_bytes[16], stat_bytes[17]
+        return (b15 << 4) | ((b16 >> 4) & 0x0F), ((b16 & 0x0F) << 8) | b17
 
     @staticmethod
     def _decode_phase(stat_bytes: bytearray) -> int:
@@ -973,6 +1026,12 @@ def main() -> int:
         default=0.00409,
         help="Vpp calibration slope: cal = a + b*freq_mhz (default: 0.00409)",
     )
+    parser.add_argument(
+        "--tx-iq-phase-deg",
+        type=float,
+        default=90.0,
+        help="Transmitted Q-vs-I phase subtracted for the (Qrx-Qtx)-(Irx-Itx) CSV columns (default: 90)",
+    )
     args = parser.parse_args()
 
     csv_output_path = None
@@ -1006,6 +1065,7 @@ def main() -> int:
         vpp_cal_enabled=(not args.no_vpp_cal),
         vpp_cal_a=args.vpp_cal_a,
         vpp_cal_b=args.vpp_cal_b,
+        tx_iq_phase_deg=args.tx_iq_phase_deg,
     )
 
     duration = args.duration_sec if args.duration_sec > 0 else None

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live GUI for FPGA ADC stats: phase and power (V^2rms / R, in watts).
+"""Live GUI for FPGA ADC stats: I and Q channel V^2rms on separate charts.
 
 Reuses ADCStatsAnalyzer for UDP receive/decode/batching; this script only
 replaces the curses terminal UI with Tkinter strip charts. Only one process can
@@ -7,11 +7,10 @@ receive the UDP stream, so run this *instead of* adc_stats_analyzer.py.
 
 Usage:
     python3 python/adc_stats_gui.py --bind-port 40000 --fpga-ip 192.168.1.128
-    python3 python/adc_stats_gui.py --load-ohms 50 --csv-output adc_stats.csv
+    python3 python/adc_stats_gui.py --csv-output adc_stats.csv
 """
 
 import argparse
-import math
 import pathlib
 import queue
 import sys
@@ -25,8 +24,8 @@ from adc_stats_analyzer import ADCStatsAnalyzer
 BG = "#1e1e1e"
 GRID = "#3a3a3a"
 TEXT = "#d4d4d4"
-CORR_COLOR = "#f0a35e"
-POWER_COLOR = "#7bd88f"
+I_COLOR = "#7bd88f"
+Q_COLOR = "#6cb6ff"
 
 
 def _dim(color, frac=0.45):
@@ -162,51 +161,39 @@ class StripChart(tk.Canvas):
 
 
 class StatsGUI:
-    def __init__(self, analyzer: ADCStatsAnalyzer, load_ohms: float, history_sec: float, refresh_ms: int,
-                 phase_center_deg: float = 90.0, phase_halfspan_deg: float = 10.0):
+    def __init__(self, analyzer: ADCStatsAnalyzer, history_sec: float, refresh_ms: int):
         self.analyzer = analyzer
-        self.load_ohms = load_ohms
         self.history_sec = history_sec
         self.refresh_ms = refresh_ms
         self.reports = queue.Queue()
         self.stop_evt = threading.Event()
 
-        self.phase_corr = BucketSeries(history_sec)
-        self.power_w = BucketSeries(history_sec)
+        self.i_v2rms = BucketSeries(history_sec)
+        self.q_v2rms = BucketSeries(history_sec)
         self.t_start = time.time()
 
         self.root = tk.Tk()
-        self.root.title("ADC Stats - Phase & Power")
+        self.root.title("ADC Stats - I/Q V²rms")
         self.root.configure(bg=BG)
         self.root.geometry("1000x720")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
         top = tk.Frame(self.root, bg=BG)
         top.pack(fill="x", padx=10, pady=(10, 0))
-        self.lbl_corr = self._readout(top, "Phase (Corr)", CORR_COLOR)
-        self.lbl_pwr = self._readout(top, f"Power (R={load_ohms:g} Ω)", POWER_COLOR)
+        self.lbl_i = self._readout(top, "I V²rms", I_COLOR)
+        self.lbl_q = self._readout(top, "Q V²rms", Q_COLOR)
         self.lbl_freq = self._readout(top, "Frequency", TEXT)
 
         self.status = tk.Label(self.root, bg=BG, fg="#888888", anchor="w", font=("Consolas", 9))
         self.status.pack(side="bottom", fill="x", padx=10, pady=(0, 6))
 
-        if phase_halfspan_deg > 0:
-            # Zoomed view; out-of-range points are pinned to the chart edge.
-            lo, hi = phase_center_deg - phase_halfspan_deg, phase_center_deg + phase_halfspan_deg
-            phase_ticks = [lo + i * (hi - lo) / 4 for i in range(5)]
-            phase_fmt = "{:.1f}°"
-        else:
-            lo, hi = -180, 180
-            phase_ticks = [-180, -90, 0, 90, 180]
-            phase_fmt = "{:.0f}°"
-        self.phase_chart = StripChart(self.root, "Phase", "deg", y_range=(lo, hi),
-                                      y_ticks=phase_ticks, fmt=phase_fmt)
-        self.phase_chart.add_series("Correlation", CORR_COLOR, self.phase_corr)
-        self.phase_chart.pack(fill="both", expand=True, padx=10, pady=(10, 5))
+        self.i_chart = StripChart(self.root, "I channel V²rms", "V²", fmt="{:.4g}")
+        self.i_chart.add_series("I", I_COLOR, self.i_v2rms)
+        self.i_chart.pack(fill="both", expand=True, padx=10, pady=(10, 5))
 
-        self.power_chart = StripChart(self.root, "Power = V²rms / R", "W", fmt="{:.4g}")
-        self.power_chart.add_series("Power", POWER_COLOR, self.power_w)
-        self.power_chart.pack(fill="both", expand=True, padx=10, pady=(5, 5))
+        self.q_chart = StripChart(self.root, "Q channel V²rms", "V²", fmt="{:.4g}")
+        self.q_chart.add_series("Q", Q_COLOR, self.q_v2rms)
+        self.q_chart.pack(fill="both", expand=True, padx=10, pady=(5, 5))
 
         self.worker = threading.Thread(target=self._rx_loop, daemon=True)
 
@@ -226,22 +213,26 @@ class StatsGUI:
         orig = a._finalize_batch_metrics
         last_t = [time.time()]
 
-        def finalize():
-            now = time.time()
-            n = len(a.batch_corr_phases_deg)
-            phases = list(a.batch_corr_phases_deg)
-            powers = []
-            for pp, pn, f in zip(a.batch_peak_pos_codes, a.batch_peak_neg_codes, a.batch_freqs_mhz):
+        def v2rms_list(pos_codes, neg_codes):
+            out = []
+            for pp, pn, f in zip(pos_codes, neg_codes, a.batch_freqs_mhz):
                 vpp = a.code_to_volts(pp) - a.code_to_volts(pn)
                 if a.vpp_cal_enabled and f > 0:
                     vpp *= a.vpp_cal_a + a.vpp_cal_b * f
-                powers.append(vpp * vpp / 8.0 / self.load_ohms)
+                out.append(vpp * vpp / 8.0)
+            return out
+
+        def finalize():
+            now = time.time()
+            i_v2 = v2rms_list(a.batch_peak_pos_codes, a.batch_peak_neg_codes)
+            q_v2 = v2rms_list(a.batch_q_peak_pos_codes, a.batch_q_peak_neg_codes)
+            n = len(i_v2)
             # Spread this batch's stats evenly between previous batch and now.
             t0 = max(last_t[0], now - 1.0)
             times = [t0 + (now - t0) * (i + 1) / n for i in range(n)] if n else []
             last_t[0] = now
             orig()
-            self.reports.put((times, phases, powers, dict(a.latest_metrics)))
+            self.reports.put((times, i_v2, q_v2, dict(a.latest_metrics)))
 
         a._finalize_batch_metrics = finalize
 
@@ -262,33 +253,30 @@ class StatsGUI:
         latest = None
         while True:
             try:
-                times, phases, powers, m = self.reports.get_nowait()
+                times, i_v2, q_v2, m = self.reports.get_nowait()
             except queue.Empty:
                 break
-            for t, ph, pw in zip(times, phases, powers):
-                self.phase_corr.add(t, ph)
-                self.power_w.add(t, pw)
-            latest = (m, m["v2rms_v2"] / self.load_ohms)
+            for t, iv, qv in zip(times, i_v2, q_v2):
+                self.i_v2rms.add(t, iv)
+                self.q_v2rms.add(t, qv)
+            latest = m
 
         if latest:
-            m, p_w = latest
-            self.lbl_corr.config(text=f"{m['corr_phase_deg']:+7.2f}°")
-            dbm = 10 * math.log10(p_w * 1000) if p_w > 0 else float("-inf")
-            self.lbl_pwr.config(text=f"{p_w:.4g} W  ({dbm:.1f} dBm)")
-            self.lbl_freq.config(text=f"{m['freq_mhz']:.4f} MHz")
+            self.lbl_i.config(text=f"{latest['v2rms_v2']:.4g} V²")
+            self.lbl_q.config(text=f"{latest['q_v2rms_v2']:.4g} V²")
+            self.lbl_freq.config(text=f"{latest['freq_mhz']:.4f} MHz")
 
         a = self.analyzer
         self.status.config(
             text=f"Stats: {a.total_stats_read:,}  Reports: {a.reports_generated}  "
                  f"Packets: {a.packets_received:,}  Invalid: {a.invalid_freq_stats}  "
-                 f"Phase rejects: {a.corr_phase_rejects}  "
                  f"Batch: {len(a.batch_peak_pos_codes)}/{a.batch_size}"
         )
 
         now = time.time()
         span = min(self.history_sec, max(5.0, now - self.t_start))
-        self.phase_chart.redraw(now, span)
-        self.power_chart.redraw(now, span)
+        self.i_chart.redraw(now, span)
+        self.q_chart.redraw(now, span)
 
         if not self.stop_evt.is_set():
             self.root.after(self.refresh_ms, self._tick)
@@ -316,7 +304,7 @@ class StatsGUI:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Live phase / power GUI for FPGA ADC stats")
+    p = argparse.ArgumentParser(description="Live I/Q V^2rms GUI for FPGA ADC stats")
     p.add_argument("--bind-ip", default="0.0.0.0")
     p.add_argument("--bind-port", type=int, default=40000)
     p.add_argument("--fpga-ip", default="192.168.1.128")
@@ -331,18 +319,12 @@ def main() -> int:
     p.add_argument("--no-vpp-cal", action="store_true")
     p.add_argument("--vpp-cal-a", type=float, default=1.0377)
     p.add_argument("--vpp-cal-b", type=float, default=0.00409)
+    p.add_argument("--tx-iq-phase-deg", type=float, default=90.0,
+                   help="Transmitted Q-vs-I phase subtracted for the (Qrx-Qtx)-(Irx-Itx) CSV columns")
     p.add_argument("--csv-output", default="", help="Optional CSV recording (same format as analyzer)")
-    p.add_argument("--load-ohms", type=float, default=1.0,
-                   help="Load resistance for power: P = V^2rms / R (default: 1 ohm, matches analyzer)")
     p.add_argument("--history-sec", type=float, default=60.0, help="Visible time window in seconds")
-    p.add_argument("--phase-center-deg", type=float, default=90.0, help="Center of phase plot y-axis")
-    p.add_argument("--phase-halfspan-deg", type=float, default=10.0,
-                   help="Phase plot shows center +/- this many degrees (0 = full -180..180)")
     p.add_argument("--refresh-ms", type=int, default=200, help="GUI redraw interval in ms")
     args = p.parse_args()
-
-    if args.load_ohms <= 0:
-        p.error("--load-ohms must be > 0")
 
     analyzer = ADCStatsAnalyzer(
         bind_ip=args.bind_ip,
@@ -361,10 +343,10 @@ def main() -> int:
         vpp_cal_enabled=not args.no_vpp_cal,
         vpp_cal_a=args.vpp_cal_a,
         vpp_cal_b=args.vpp_cal_b,
+        tx_iq_phase_deg=args.tx_iq_phase_deg,
     )
 
-    StatsGUI(analyzer, args.load_ohms, args.history_sec, args.refresh_ms,
-             args.phase_center_deg, args.phase_halfspan_deg).run()
+    StatsGUI(analyzer, args.history_sec, args.refresh_ms).run()
     return 0
 
 
